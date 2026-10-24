@@ -60,6 +60,11 @@ jobs:
 
       - name: Build CGO Plugin
         shell: bash
+        env:
+          CGO_ENABLED: '1'
+          EXT: ${{ matrix.ext }}
+          TARGET_GOOS: ${{ matrix.goos }}
+          TARGET_GOARCH: ${{ matrix.goarch }}
         run: |
           PLUGIN_ID="cpa-models-speed-test"
           RAW_TAG="${{ github.ref_name }}"
@@ -68,10 +73,10 @@ jobs:
             VERSION="1.0.0"
           fi
 
-          LIB_NAME="${PLUGIN_ID}.${matrix.ext}"
+          LIB_NAME="${PLUGIN_ID}.${EXT}"
           go build -buildmode=c-shared -o "${LIB_NAME}" .
 
-          ZIP_NAME="${PLUGIN_ID}_${VERSION}_${matrix.goos}_${matrix.goarch}.zip"
+          ZIP_NAME="${PLUGIN_ID}_${VERSION}_${TARGET_GOOS}_${TARGET_GOARCH}.zip"
           if command -v zip >/dev/null 2>&1; then
             zip -j "${ZIP_NAME}" "${LIB_NAME}"
           else
