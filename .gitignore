@@ -1,0 +1,6 @@
+bin/
+*.so
+*.dll
+*.dylib
+*.h
+web/node_modules/
