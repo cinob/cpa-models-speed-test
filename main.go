@@ -533,6 +533,12 @@ func probeSingleModel(target ModelTarget, hostCallbackID string) TestResult {
 		res.Key = target.ChannelID + "::" + target.Model
 	}
 
+	if target.Disabled {
+		res.Status = "Disabled"
+		res.Message = "模型已禁用"
+		return res
+	}
+
 	// 极简 Prompt，请求仅生成 1 个 Token，stream: true
 	body, errBody := json.Marshal(map[string]any{
 		"model":      target.Model,
