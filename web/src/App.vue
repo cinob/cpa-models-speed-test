@@ -5,7 +5,9 @@ import { useStorage, useClipboard } from '@vueuse/core'
 // 持久化存储与设置
 const managementKey = useStorage('cpa_management_key', '')
 const viewMode = useStorage('cpa_speedtest_view_mode', 'grid') // 'grid' | 'table'
-const concurrency = useStorage('cpa_speedtest_concurrency', 20)
+const testMode = useStorage('cpa_speedtest_mode', 'parallel') // 'parallel' (并行) | 'serial' (串行防限流)
+const concurrency = useStorage('cpa_speedtest_concurrency', 10) // 并发数 (5/10/20)
+const serialDelay = useStorage('cpa_speedtest_serial_delay', 500) // 串行模式防限流等待间隔 (毫秒)
 const activeProvider = useStorage('cpa_speedtest_provider_filter', 'all')
 const activeStatus = useStorage('cpa_speedtest_status_filter', 'all')
 const activeEnableStatus = useStorage('cpa_speedtest_enable_filter', 'all') // 'all' | 'enabled' | 'disabled'
@@ -15,6 +17,8 @@ const disabledModelKeys = useStorage('cpa_speedtest_disabled_keys', []) // 用�
 // 状态
 const loadingChannels = ref(false)
 const testingAll = ref(false)
+const abortTesting = ref(false)
+const currentProgress = ref({ current: 0, total: 0 })
 const searchQuery = ref('')
 const channels = ref([])
 const modelList = ref([]) // 结构: { key, channel_id, channel_name, provider, model, disabled }
@@ -273,49 +277,78 @@ const testableModels = computed(() => {
   return filteredModels.value.filter(m => !isModelDisabled(m))
 })
 
-// 一键测速：仅针对当前筛选出来且已启用的模型列表执行测试
+// 一键测速：仅针对当前筛选出来且已启用的模型列表执行测试（支持并行与串行防限流两种模式）
 async function testAllModels() {
   const targets = testableModels.value
   if (testingAll.value || targets.length === 0) return
   testingAll.value = true
+  abortTesting.value = false
+  currentProgress.value = { current: 0, total: targets.length }
 
-  targets.forEach(t => testingKeys.value.add(t.key))
-
-  try {
-    const res = await apiFetch('/batch-test', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        concurrency: Number(concurrency.value) || 20,
-        items: targets.map(t => ({
-          channel_id: t.channel_id,
-          provider: t.provider,
-          model: t.model
-        }))
-      })
-    })
-
-    if (res.ok && Array.isArray(res.results)) {
-      for (const item of res.results) {
-        const key = item.key || `${item.channel_id}::${item.model}`
-        testResults.value[key] = item
+  if (testMode.value === 'serial') {
+    // 串行模式：逐个测试，卡片逐个点亮，完美规避免费账号的频控限制
+    try {
+      for (let i = 0; i < targets.length; i++) {
+        if (abortTesting.value) break
+        const item = targets[i]
+        currentProgress.value.current = i + 1
+        await testSingleModel(item)
+        if (serialDelay.value > 0 && i < targets.length - 1 && !abortTesting.value) {
+          await new Promise(r => setTimeout(r, Number(serialDelay.value) || 0))
+        }
       }
+    } finally {
+      testingAll.value = false
+      abortTesting.value = false
     }
-  } catch (err) {
-    console.error('批量测速失败，转为并发回退单测:', err)
-    const poolLimit = Number(concurrency.value) || 10
-    const queue = [...targets]
-    const workers = Array(poolLimit).fill(0).map(async () => {
-      while (queue.length > 0) {
-        const item = queue.shift()
-        if (item) await testSingleModel(item)
+  } else {
+    // 并行模式：Goroutine / 并发池加速测试
+    targets.forEach(t => testingKeys.value.add(t.key))
+
+    try {
+      const res = await apiFetch('/batch-test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          concurrency: Number(concurrency.value) || 10,
+          items: targets.map(t => ({
+            channel_id: t.channel_id,
+            provider: t.provider,
+            model: t.model
+          }))
+        })
+      })
+
+      if (res.ok && Array.isArray(res.results)) {
+        for (const item of res.results) {
+          const key = item.key || `${item.channel_id}::${item.model}`
+          testResults.value[key] = item
+        }
       }
-    })
-    await Promise.all(workers)
-  } finally {
-    targets.forEach(t => testingKeys.value.delete(t.key))
-    testingAll.value = false
+    } catch (err) {
+      console.error('批量测速失败，转为并发回退单测:', err)
+      const poolLimit = Number(concurrency.value) || 10
+      const queue = [...targets]
+      const workers = Array(poolLimit).fill(0).map(async () => {
+        while (queue.length > 0 && !abortTesting.value) {
+          const item = queue.shift()
+          if (item) await testSingleModel(item)
+        }
+      })
+      await Promise.all(workers)
+    } finally {
+      targets.forEach(t => testingKeys.value.delete(t.key))
+      testingAll.value = false
+      abortTesting.value = false
+    }
   }
+}
+
+// 停止当前正在进行的测速
+function stopTesting() {
+  abortTesting.value = true
+  testingKeys.value.clear()
+  testingAll.value = false
 }
 
 // 统计看板数据
@@ -463,6 +496,10 @@ function setupWebMCP() {
       }
     ],
     runAll: testAllModels,
+    stop: stopTesting,
+    setMode: (mode) => {
+      if (mode === 'parallel' || mode === 'serial') testMode.value = mode
+    },
     runSingle: (channelId, model) => {
       const target = modelList.value.find(m => (m.channel_id === channelId || m.channel_name === channelId) && m.model === model)
       if (target) return testSingleModel(target)
@@ -510,18 +547,75 @@ onMounted(() => {
       </div>
 
       <div class="nav-actions">
-        <!-- 一键测速主按钮：明确显示测试当前筛选出且启用的模型数量 -->
+        <!-- 测试模式选择：并行 / 串行 (防限流) -->
+        <div class="mode-control-wrap">
+          <div class="mode-segmented">
+            <button
+              class="seg-btn"
+              :class="{ active: testMode === 'parallel' }"
+              title="并行高并发测速，耗时最短"
+              @click="testMode = 'parallel'"
+            >
+              ⚡ 并行
+            </button>
+            <button
+              class="seg-btn"
+              :class="{ active: testMode === 'serial' }"
+              title="串行逐个测速，防免费平台频控 (429 限流)"
+              @click="testMode = 'serial'"
+            >
+              🚶 串行防限流
+            </button>
+          </div>
+
+          <!-- 模式微调选项 -->
+          <select
+            v-if="testMode === 'parallel'"
+            v-model="concurrency"
+            class="param-select"
+            title="并发请求数"
+          >
+            <option :value="5">5 并发</option>
+            <option :value="10">10 并发</option>
+            <option :value="20">20 并发</option>
+            <option :value="30">30 并发</option>
+          </select>
+          <select
+            v-else
+            v-model="serialDelay"
+            class="param-select"
+            title="每个模型测完后等待间隔，防触发平台频控"
+          >
+            <option :value="0">无延迟</option>
+            <option :value="300">间隔 300ms</option>
+            <option :value="500">间隔 500ms</option>
+            <option :value="1000">间隔 1 秒</option>
+            <option :value="2000">间隔 2 秒</option>
+          </select>
+        </div>
+
+        <!-- 一键测速主按钮 -->
         <button
           class="btn btn-primary"
           :disabled="testingAll || loadingChannels || testableModels.length === 0"
-          :title="`并发测试当前筛选列表中已启用的 ${testableModels.length} 个模型`"
+          :title="`测试当前筛选列表中已启用的 ${testableModels.length} 个模型`"
           @click="testAllModels"
         >
           <span v-if="testingAll" class="spinner"></span>
-          <span v-else class="icon">⚡</span>
+          <span v-else class="icon">{{ testMode === 'parallel' ? '⚡' : '🚶' }}</span>
           <span>
-            {{ testingAll ? '正在并发测速...' : `一键测速 (${testableModels.length}个)` }}
+            {{ testingAll
+                ? (testMode === 'serial'
+                    ? `测速中 (${currentProgress.current}/${currentProgress.total})...`
+                    : `正在并发测速...`)
+                : `一键测速 (${testableModels.length}个)`
+            }}
           </span>
+        </button>
+
+        <!-- 停止测速按钮 (测速中可见) -->
+        <button v-if="testingAll" class="btn btn-danger" title="立即终止本次测速" @click="stopTesting">
+          ⏹ 停止
         </button>
 
         <!-- 刷新列表 -->
@@ -1077,6 +1171,69 @@ onMounted(() => {
 .btn-secondary:hover:not(:disabled) {
   background: #334155;
   color: #f8fafc;
+}
+
+.btn-danger {
+  background: #dc2626;
+  color: #ffffff;
+  border-color: #ef4444;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: #b91c1c;
+}
+
+/* 测试模式选择器 (并行/串行) */
+.mode-control-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: #0f172a;
+  border: 1px solid #334155;
+  padding: 0.2rem;
+  border-radius: 8px;
+}
+
+.mode-segmented {
+  display: flex;
+  gap: 0.2rem;
+}
+
+.seg-btn {
+  background: none;
+  border: none;
+  color: #94a3b8;
+  padding: 0.35rem 0.65rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.seg-btn:hover {
+  color: #f8fafc;
+}
+
+.seg-btn.active {
+  background: #2563eb;
+  color: #ffffff;
+}
+
+.param-select {
+  background: #1e293b;
+  border: 1px solid #475569;
+  color: #38bdf8;
+  font-size: 0.775rem;
+  font-weight: 600;
+  padding: 0.3rem 0.5rem;
+  border-radius: 6px;
+  cursor: pointer;
+  outline: none;
+}
+
+.param-select:hover {
+  border-color: #38bdf8;
 }
 
 .btn-sm {
