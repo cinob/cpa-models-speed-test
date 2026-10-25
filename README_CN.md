@@ -163,17 +163,14 @@ plugins:
 
 ## 🌐 接口列表
 
-插件提供完整的特权 Management API（需携带管理密钥）以及浏览器直连 Resource 资源路由：
+严格遵循 CPA 插件安全规范，动态操作均走 Management API（需携带管理密钥），Resource 路由仅用于静态界面呈现：
 
 | 方法 | 路由路径 | 说明 | 鉴权要求 |
 | :--- | :--- | :--- | :--- |
-| `GET` | `/v0/resource/plugins/cpa-models-speed-test/speedtest` | 模型测速主面板界面 (HTML) | 无需鉴权 |
-| `GET` | `/v0/management/plugins/cpa-models-speed-test/channels` | 获取后端配置的渠道与模型列表 | 管理密钥 |
-| `POST` | `/v0/management/plugins/cpa-models-speed-test/test` | 对单个模型发起后端代发流式测速 | 管理密钥 |
-| `POST` | `/v0/management/plugins/cpa-models-speed-test/batch-test` | 后端 Goroutine 并发批量测速 | 管理密钥 |
-| `GET` | `/v0/resource/plugins/cpa-models-speed-test/api/channels` | 渠道与模型列表 (资源后备) | 浏览器同源 |
-| `GET` | `/v0/resource/plugins/cpa-models-speed-test/api/test` | 单个测速 (资源后备) | 浏览器同源 |
-| `GET` | `/v0/resource/plugins/cpa-models-speed-test/api/batch-test` | 批量并发测速 (资源后备) | 浏览器同源 |
+| `GET` | `/v0/resource/plugins/cpa-models-speed-test/speedtest` | 模型测速主面板界面 (HTML 静态资产) | 无需鉴权 |
+| `GET` | `/v0/management/plugins/cpa-models-speed-test/channels` | 获取后端配置的渠道与模型列表 | CPA 管理密钥 |
+| `POST` | `/v0/management/plugins/cpa-models-speed-test/test` | 对单个模型发起后端代发流式测速 | CPA 管理密钥 |
+| `POST` | `/v0/management/plugins/cpa-models-speed-test/batch-test` | 后端并发 / 串行批量测速 | CPA 管理密钥 |
 
 ---
 

@@ -61,7 +61,7 @@ function disableAllFiltered() {
   disabledModelKeys.value = Array.from(currentSet)
 }
 
-// API 请求封装：优先调用 Management 路由，附带 Management Key
+// API 请求封装：严格调用 Management 鉴权路由，附带 Management Key，严禁回退到未鉴权资源路由
 async function apiFetch(endpoint, options = {}) {
   const headers = { ...(options.headers || {}) }
 
@@ -76,38 +76,19 @@ async function apiFetch(endpoint, options = {}) {
   }
 
   const mgmtUrl = `/v0/management/plugins/cpa-models-speed-test${endpoint}`
-  const resourceUrl = `/v0/resource/plugins/cpa-models-speed-test/api${endpoint}`
 
-  try {
-    const res = await fetch(mgmtUrl, { ...options, headers })
-    if (res.status === 401 || res.status === 403) {
-      try {
-        const res2 = await fetch(resourceUrl, { ...options, headers })
-        if (res2.ok) {
-          authErrorTip.value = ''
-          return await res2.json()
-        }
-      } catch (_) {}
-      authErrorTip.value = `管理密码鉴权失败 (HTTP ${res.status})：请点击右上角「🔑 管理密码」输入 CPA 控制面板密码 (management-key)`
-      showKeyConfig.value = true
-      throw new Error(`Management 鉴权失败 (${res.status})，请输入正确的管理密码`)
-    }
-    if (!res.ok) {
-      const errText = await res.text()
-      throw new Error(`HTTP ${res.status}: ${errText || res.statusText}`)
-    }
-    authErrorTip.value = ''
-    return await res.json()
-  } catch (err) {
-    if (err.message && err.message.includes('404')) {
-      const res = await fetch(resourceUrl, { ...options, headers })
-      if (res.ok) {
-        authErrorTip.value = ''
-        return await res.json()
-      }
-    }
-    throw err
+  const res = await fetch(mgmtUrl, { ...options, headers })
+  if (res.status === 401 || res.status === 403) {
+    authErrorTip.value = `管理密码鉴权失败 (HTTP ${res.status})：请点击右上角「🔑 设置管理密码」输入 CPA 控制面板密码 (management-key)`
+    showKeyConfig.value = true
+    throw new Error(`Management 鉴权失败 (${res.status})，请输入正确的管理密码`)
   }
+  if (!res.ok) {
+    const errText = await res.text()
+    throw new Error(`HTTP ${res.status}: ${errText || res.statusText}`)
+  }
+  authErrorTip.value = ''
+  return await res.json()
 }
 
 // 获取配置的所有渠道和模型列表

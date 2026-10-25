@@ -61,7 +61,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -76,7 +75,7 @@ var embeddedIndexHTML []byte
 
 const (
 	pluginName          = "cpa-models-speed-test"
-	pluginVersion       = "1.0.0"
+	pluginVersion       = "1.0.1"
 	resourcePath        = "/speedtest"
 	resourceContentType = "text/html; charset=utf-8"
 	defaultConcurrency  = 20
@@ -254,21 +253,6 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 					Menu:        "模型测速",
 					Description: "一键批量测试所有配置渠道的模型首字延迟 (TTFT) 与可用性",
 				},
-				{
-					Path:        "/api/channels",
-					Menu:        "",
-					Description: "获取当前配置的所有上游渠道与模型列表 (GET)",
-				},
-				{
-					Path:        "/api/test",
-					Menu:        "",
-					Description: "单独测速指定的渠道与模型 (GET)",
-				},
-				{
-					Path:        "/api/batch-test",
-					Menu:        "",
-					Description: "批量并发测速模型 (GET)",
-				},
 			},
 			Routes: []pluginapi.ManagementRoute{
 				{
@@ -330,8 +314,13 @@ func handleManagement(raw []byte) ([]byte, error) {
 		method = http.MethodGet
 	}
 
-	// 1. 静态资源路由: /v0/resource/plugins/cpa-models-speed-test/speedtest
-	if strings.HasSuffix(path, resourcePath) || strings.HasSuffix(path, resourcePath+"/") {
+	managementPrefix := "/plugins/" + pluginName
+	fullManagementPrefix := "/v0/management" + managementPrefix
+	resourcePrefix := "/v0/resource/plugins/" + pluginName
+	fullResourcePath := resourcePrefix + resourcePath
+
+	// 1. 静态资源路由: 严格仅暴露 /speedtest，不走鉴权，只返回静态 HTML，绝不挂载动态 API 或宿主回调
+	if path == fullResourcePath || path == fullResourcePath+"/" || path == resourcePath || path == resourcePath+"/" {
 		return okEnvelope(managementResponse{
 			StatusCode: http.StatusOK,
 			Headers: http.Header{
@@ -342,8 +331,8 @@ func handleManagement(raw []byte) ([]byte, error) {
 		})
 	}
 
-	// 2. 渠道与模型列表: GET /channels 或 /api/channels
-	if strings.HasSuffix(path, "/channels") {
+	// 2. 渠道与模型列表: GET /v0/management/plugins/cpa-models-speed-test/channels
+	if (path == fullManagementPrefix+"/channels" || path == managementPrefix+"/channels" || path == "/channels") && method == http.MethodGet {
 		channelsResp, err := fetchChannelsAndModels()
 		if err != nil {
 			return okEnvelope(jsonResponse(http.StatusInternalServerError, map[string]any{
@@ -354,20 +343,16 @@ func handleManagement(raw []byte) ([]byte, error) {
 		return okEnvelope(jsonResponse(http.StatusOK, channelsResp))
 	}
 
-	// 3. 单独测速: POST /test 或 GET /api/test?channel_id=...&model=...&provider=...
-	if strings.HasSuffix(path, "/test") {
+	// 3. 单独测速: POST /v0/management/plugins/cpa-models-speed-test/test
+	if (path == fullManagementPrefix+"/test" || path == managementPrefix+"/test" || path == "/test") && method == http.MethodPost {
 		var target ModelTarget
-		if method == http.MethodPost && len(req.Body) > 0 {
+		if len(req.Body) > 0 {
 			if err := json.Unmarshal(req.Body, &target); err != nil {
 				return okEnvelope(jsonResponse(http.StatusBadRequest, map[string]any{
 					"ok":    false,
 					"error": "invalid json body: " + err.Error(),
 				}))
 			}
-		} else {
-			target.ChannelID = strings.TrimSpace(req.Query.Get("channel_id"))
-			target.Provider = strings.TrimSpace(req.Query.Get("provider"))
-			target.Model = strings.TrimSpace(req.Query.Get("model"))
 		}
 
 		if target.Model == "" {
@@ -384,17 +369,11 @@ func handleManagement(raw []byte) ([]byte, error) {
 		}))
 	}
 
-	// 4. 一键批量并发测速: POST /batch-test 或 GET /api/batch-test
-	if strings.HasSuffix(path, "/batch-test") {
+	// 4. 一键批量并发测速: POST /v0/management/plugins/cpa-models-speed-test/batch-test
+	if (path == fullManagementPrefix+"/batch-test" || path == managementPrefix+"/batch-test" || path == "/batch-test") && method == http.MethodPost {
 		var batchReq BatchTestRequest
-		if method == http.MethodPost && len(req.Body) > 0 {
+		if len(req.Body) > 0 {
 			_ = json.Unmarshal(req.Body, &batchReq)
-		} else {
-			if rawConcurrency := req.Query.Get("concurrency"); rawConcurrency != "" {
-				if c, err := strconv.Atoi(rawConcurrency); err == nil {
-					batchReq.Concurrency = c
-				}
-			}
 		}
 
 		// 若未指定 items，则自动加载所有可用模型

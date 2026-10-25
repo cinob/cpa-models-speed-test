@@ -30,6 +30,9 @@ func TestPluginRegister(t *testing.T) {
 	if reg.Metadata.Name != pluginName {
 		t.Errorf("expected plugin name %q, got %q", pluginName, reg.Metadata.Name)
 	}
+	if reg.Metadata.Version != "1.0.1" {
+		t.Errorf("expected plugin version 1.0.1, got %q", reg.Metadata.Version)
+	}
 	if !reg.Capabilities.ManagementAPI {
 		t.Errorf("expected management_api capability to be true")
 	}
@@ -57,27 +60,27 @@ func TestManagementRegister(t *testing.T) {
 		t.Fatalf("unmarshal managementRegistration: %v", err)
 	}
 
-	// 检查资源页面
-	hasSpeedtestResource := false
-	for _, res := range reg.Resources {
-		if res.Path == resourcePath && res.Menu == "模型测速" {
-			hasSpeedtestResource = true
-			break
-		}
+	// 检查资源页面：按安全规范，只允许注册静态资源页面，严禁注册动态 API
+	if len(reg.Resources) != 1 {
+		t.Fatalf("expected exactly 1 resource route, got %d", len(reg.Resources))
 	}
-	if !hasSpeedtestResource {
-		t.Errorf("expected resource route %q with Menu '模型测速'", resourcePath)
+	if reg.Resources[0].Path != resourcePath || reg.Resources[0].Menu != "模型测速" {
+		t.Errorf("expected resource route %q with Menu '模型测速', got %+v", resourcePath, reg.Resources[0])
 	}
 
 	// 检查管理 API 路由
 	hasBatchRoute := false
 	hasSingleRoute := false
+	hasChannelsRoute := false
 	for _, route := range reg.Routes {
 		if strings.Contains(route.Path, "batch-test") && route.Method == http.MethodPost {
 			hasBatchRoute = true
 		}
-		if strings.Contains(route.Path, "test") && route.Method == http.MethodPost {
+		if strings.HasSuffix(route.Path, "/test") && route.Method == http.MethodPost {
 			hasSingleRoute = true
+		}
+		if strings.Contains(route.Path, "channels") && route.Method == http.MethodGet {
+			hasChannelsRoute = true
 		}
 	}
 	if !hasBatchRoute {
@@ -85,6 +88,73 @@ func TestManagementRegister(t *testing.T) {
 	}
 	if !hasSingleRoute {
 		t.Errorf("expected POST test route")
+	}
+	if !hasChannelsRoute {
+		t.Errorf("expected GET channels route")
+	}
+}
+
+func TestResourceRouteRejectsDynamicAPIs(t *testing.T) {
+	rejectedPaths := []string{
+		"/v0/resource/plugins/cpa-models-speed-test/api/channels",
+		"/v0/resource/plugins/cpa-models-speed-test/channels",
+		"/v0/resource/plugins/cpa-models-speed-test/api/test",
+		"/v0/resource/plugins/cpa-models-speed-test/test",
+		"/v0/resource/plugins/cpa-models-speed-test/api/batch-test",
+		"/v0/resource/plugins/cpa-models-speed-test/batch-test",
+	}
+
+	for _, p := range rejectedPaths {
+		req := managementRequest{
+			Method:  http.MethodGet,
+			Path:    p,
+			Headers: http.Header{},
+			Query:   url.Values{},
+		}
+		rawReq, _ := json.Marshal(req)
+
+		raw, err := handleMethod("management.handle", rawReq)
+		if err != nil {
+			t.Fatalf("handleMethod error on %s: %v", p, err)
+		}
+
+		var env envelope
+		if err := json.Unmarshal(raw, &env); err != nil {
+			t.Fatalf("unmarshal envelope: %v", err)
+		}
+		var resp managementResponse
+		if err := json.Unmarshal(env.Result, &resp); err != nil {
+			t.Fatalf("unmarshal response: %v", err)
+		}
+
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("path %s should be rejected on resource route with 404, got %d", p, resp.StatusCode)
+		}
+	}
+}
+
+func TestManagementRouteEnforcesMethod(t *testing.T) {
+	// GET on POST-only /test route must return 404
+	req := managementRequest{
+		Method:  http.MethodGet,
+		Path:    "/v0/management/plugins/cpa-models-speed-test/test",
+		Headers: http.Header{},
+		Query:   url.Values{},
+	}
+	rawReq, _ := json.Marshal(req)
+
+	raw, err := handleMethod("management.handle", rawReq)
+	if err != nil {
+		t.Fatalf("handleMethod error: %v", err)
+	}
+
+	var env envelope
+	_ = json.Unmarshal(raw, &env)
+	var resp managementResponse
+	_ = json.Unmarshal(env.Result, &resp)
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("GET /test should return 404, got %d", resp.StatusCode)
 	}
 }
 
