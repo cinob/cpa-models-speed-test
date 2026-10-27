@@ -71,7 +71,7 @@ jobs:
         timeout-minutes: 5
         run: |
           sudo DEBIAN_FRONTEND=noninteractive apt-get update -o Acquire::Retries=3 -o Acquire::http::Timeout=20
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends -o Acquire::Retries=3 -o Acquire::http::Timeout=20 gcc-aarch64-linux-gnu
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -o Acquire::Retries=3 -o Acquire::http::Timeout=20 gcc-aarch64-linux-gnu libc6-dev-arm64-cross
 
       - name: Build CGO Plugin
         shell: bash
