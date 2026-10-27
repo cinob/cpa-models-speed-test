@@ -8,6 +8,7 @@ const viewMode = useStorage('cpa_speedtest_view_mode', 'grid') // 'grid' | 'tabl
 const testMode = useStorage('cpa_speedtest_mode', 'parallel') // 'parallel' (并行) | 'serial' (串行防限流)
 const concurrency = useStorage('cpa_speedtest_concurrency', 10) // 并发数 (5/10/20)
 const serialDelay = useStorage('cpa_speedtest_serial_delay', 500) // 串行模式防限流等待间隔 (毫秒)
+const timeout = useStorage('cpa_speedtest_timeout', 30) // 单次测速超时限制 (秒，默认 30)
 const activeProvider = useStorage('cpa_speedtest_provider_filter', 'all')
 const activeStatus = useStorage('cpa_speedtest_status_filter', 'all')
 const activeEnableStatus = useStorage('cpa_speedtest_enable_filter', 'all') // 'all' | 'enabled' | 'disabled'
@@ -140,7 +141,8 @@ async function testSingleModel(target) {
       body: JSON.stringify({
         channel_id: target.channel_id,
         provider: target.provider,
-        model: target.model
+        model: target.model,
+        timeout: Number(timeout.value) || 30
       })
     })
 
@@ -228,27 +230,32 @@ const filteredModels = computed(() => {
     )
   }
 
-  // 排序
+  // 排序：被禁用的模型始终沉底（排到最后）
   const sorted = [...list]
-  if (sortBy.value === 'delay_asc') {
-    sorted.sort((a, b) => {
+  sorted.sort((a, b) => {
+    const disA = isModelDisabled(a)
+    const disB = isModelDisabled(b)
+    if (disA !== disB) return disA ? 1 : -1
+
+    if (sortBy.value === 'delay_asc') {
       const ra = testResults.value[a.key]
       const rb = testResults.value[b.key]
       const da = ra && ra.status === 'Success' ? ra.ttft_ms : 999999
       const db = rb && rb.status === 'Success' ? rb.ttft_ms : 999999
       return da - db
-    })
-  } else if (sortBy.value === 'delay_desc') {
-    sorted.sort((a, b) => {
+    }
+    if (sortBy.value === 'delay_desc') {
       const ra = testResults.value[a.key]
       const rb = testResults.value[b.key]
       const da = ra && ra.status === 'Success' ? ra.ttft_ms : -1
       const db = rb && rb.status === 'Success' ? rb.ttft_ms : -1
       return db - da
-    })
-  } else if (sortBy.value === 'model_asc') {
-    sorted.sort((a, b) => a.model.localeCompare(b.model))
-  }
+    }
+    if (sortBy.value === 'model_asc') {
+      return a.model.localeCompare(b.model)
+    }
+    return 0
+  })
 
   return sorted
 })
@@ -292,6 +299,7 @@ async function testAllModels() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           concurrency: Number(concurrency.value) || 10,
+          timeout: Number(timeout.value) || 30,
           items: targets.map(t => ({
             channel_id: t.channel_id,
             provider: t.provider,
@@ -481,6 +489,9 @@ function setupWebMCP() {
     setMode: (mode) => {
       if (mode === 'parallel' || mode === 'serial') testMode.value = mode
     },
+    setTimeout: (sec) => {
+      timeout.value = Number(sec) || 30
+    },
     runSingle: (channelId, model) => {
       const target = modelList.value.find(m => (m.channel_id === channelId || m.channel_name === channelId) && m.model === model)
       if (target) return testSingleModel(target)
@@ -491,7 +502,8 @@ function setupWebMCP() {
       if (target) toggleModelDisabled(target)
     },
     getStats: () => stats.value,
-    getResults: () => testResults.value
+    getResults: () => testResults.value,
+    getTimeout: () => timeout.value
   }
 
   window.__web_mcp__ = webMCP
@@ -572,6 +584,19 @@ onMounted(() => {
             <option :value="500">间隔 500ms</option>
             <option :value="1000">间隔 1 秒</option>
             <option :value="2000">间隔 2 秒</option>
+          </select>
+
+          <!-- 测速超时选项 (串行与并行通用) -->
+          <select
+            v-model="timeout"
+            class="param-select"
+            title="单次测速超时时间限制 (默认 30s)"
+          >
+            <option :value="10">10s 超时</option>
+            <option :value="15">15s 超时</option>
+            <option :value="30">30s 超时</option>
+            <option :value="60">60s 超时</option>
+            <option :value="90">90s 超时</option>
           </select>
         </div>
 

@@ -30,8 +30,11 @@ func TestPluginRegister(t *testing.T) {
 	if reg.Metadata.Name != pluginName {
 		t.Errorf("expected plugin name %q, got %q", pluginName, reg.Metadata.Name)
 	}
-	if reg.Metadata.Version != "1.0.1" {
-		t.Errorf("expected plugin version 1.0.1, got %q", reg.Metadata.Version)
+	if reg.Metadata.Version != pluginVersion {
+		t.Errorf("expected plugin version %q, got %q", pluginVersion, reg.Metadata.Version)
+	}
+	if len(reg.Metadata.ConfigFields) < 2 {
+		t.Errorf("expected at least 2 config fields, got %d", len(reg.Metadata.ConfigFields))
 	}
 	if !reg.Capabilities.ManagementAPI {
 		t.Errorf("expected management_api capability to be true")
@@ -254,5 +257,20 @@ func TestBatchSummaryCalculation(t *testing.T) {
 	}
 	if summary.AvgTTFTMs != 300 {
 		t.Errorf("expected avg TTFT 300ms, got %d", summary.AvgTTFTMs)
+	}
+}
+
+func TestProbeSingleModelDisabled(t *testing.T) {
+	target := ModelTarget{
+		ChannelID: "test-channel",
+		Model:     "test-model",
+		Disabled:  true,
+	}
+	res := probeSingleModel(target, "", 5)
+	if res.Status != "Disabled" {
+		t.Errorf("expected status 'Disabled', got %q", res.Status)
+	}
+	if res.Message != "模型已禁用" {
+		t.Errorf("expected message '模型已禁用', got %q", res.Message)
 	}
 }

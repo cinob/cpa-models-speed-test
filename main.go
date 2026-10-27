@@ -74,11 +74,12 @@ import (
 var embeddedIndexHTML []byte
 
 const (
-	pluginName          = "cpa-models-speed-test"
-	pluginVersion       = "1.0.1"
-	resourcePath        = "/speedtest"
-	resourceContentType = "text/html; charset=utf-8"
-	defaultConcurrency  = 20
+	pluginName            = "cpa-models-speed-test"
+	pluginVersion         = "1.0.2"
+	resourcePath          = "/speedtest"
+	resourceContentType   = "text/html; charset=utf-8"
+	defaultConcurrency    = 20
+	defaultTimeoutSeconds = 30
 )
 
 // RPC Envelope structures
@@ -168,6 +169,11 @@ type TestResult struct {
 	TestedAt    string `json:"tested_at"`
 }
 
+type SingleTestRequest struct {
+	ModelTarget
+	Timeout int `json:"timeout,omitempty"` // 单位: 秒，默认 30
+}
+
 type SingleTestResponse struct {
 	OK     bool       `json:"ok"`
 	Result TestResult `json:"result"`
@@ -175,6 +181,7 @@ type SingleTestResponse struct {
 
 type BatchTestRequest struct {
 	Concurrency int           `json:"concurrency,omitempty"`
+	Timeout     int           `json:"timeout,omitempty"` // 单位: 秒，默认 30
 	Items       []ModelTarget `json:"items,omitempty"`
 }
 
@@ -292,6 +299,12 @@ func pluginRegistration() registration {
 					Default:     defaultConcurrency,
 					Description: "并发测速 Goroutine 数量限制 (默认 20)",
 				},
+				{
+					Name:        "timeout",
+					Type:        "int",
+					Default:     defaultTimeoutSeconds,
+					Description: "单次测速超时时间限制 (秒，默认 30)",
+				},
 			},
 		},
 		Capabilities: registrationCapabilities{
@@ -345,9 +358,9 @@ func handleManagement(raw []byte) ([]byte, error) {
 
 	// 3. 单独测速: POST /v0/management/plugins/cpa-models-speed-test/test
 	if (path == fullManagementPrefix+"/test" || path == managementPrefix+"/test" || path == "/test") && method == http.MethodPost {
-		var target ModelTarget
+		var testReq SingleTestRequest
 		if len(req.Body) > 0 {
-			if err := json.Unmarshal(req.Body, &target); err != nil {
+			if err := json.Unmarshal(req.Body, &testReq); err != nil {
 				return okEnvelope(jsonResponse(http.StatusBadRequest, map[string]any{
 					"ok":    false,
 					"error": "invalid json body: " + err.Error(),
@@ -355,14 +368,14 @@ func handleManagement(raw []byte) ([]byte, error) {
 			}
 		}
 
-		if target.Model == "" {
+		if testReq.Model == "" {
 			return okEnvelope(jsonResponse(http.StatusBadRequest, map[string]any{
 				"ok":    false,
 				"error": "model is required for speed test",
 			}))
 		}
 
-		result := probeSingleModel(target, req.HostCallbackID)
+		result := probeSingleModel(testReq.ModelTarget, req.HostCallbackID, testReq.Timeout)
 		return okEnvelope(jsonResponse(http.StatusOK, SingleTestResponse{
 			OK:     true,
 			Result: result,
@@ -384,7 +397,7 @@ func handleManagement(raw []byte) ([]byte, error) {
 			}
 		}
 
-		results, summary := runBatchSpeedTest(batchReq.Items, batchReq.Concurrency, req.HostCallbackID)
+		results, summary := runBatchSpeedTest(batchReq.Items, batchReq.Concurrency, batchReq.Timeout, req.HostCallbackID)
 		return okEnvelope(jsonResponse(http.StatusOK, BatchTestResponse{
 			OK:      true,
 			Results: results,
@@ -489,8 +502,12 @@ func fetchChannelsAndModels() (ChannelsResponse, error) {
 	}, nil
 }
 
-// probeSingleModel 后端代发流式轻量探测：发送最简 Prompt，收到首个 Token 时立即主动断开连接计算精确 TTFT
-func probeSingleModel(target ModelTarget, hostCallbackID string) TestResult {
+// probeSingleModel 后端代发流式轻量探测：发送最简 Prompt，收到首个 Token 时立即主动断开连接计算精确 TTFT，支持可配置超时
+func probeSingleModel(target ModelTarget, hostCallbackID string, timeoutSec int) TestResult {
+	if timeoutSec <= 0 {
+		timeoutSec = defaultTimeoutSeconds
+	}
+
 	start := time.Now()
 	nowStr := time.Now().Format("15:04:05")
 
@@ -516,6 +533,43 @@ func probeSingleModel(target ModelTarget, hostCallbackID string) TestResult {
 		res.Status = "Disabled"
 		res.Message = "模型已禁用"
 		return res
+	}
+
+	done := make(chan TestResult, 1)
+
+	go func() {
+		done <- executeProbe(target, hostCallbackID, start, nowStr)
+	}()
+
+	select {
+	case r := <-done:
+		return r
+	case <-time.After(time.Duration(timeoutSec) * time.Second):
+		res.TotalMs = time.Since(start).Milliseconds()
+		res.StatusCode = http.StatusGatewayTimeout
+		res.Status = "Error"
+		res.Message = fmt.Sprintf("测速超时 (超过 %d 秒)", timeoutSec)
+		return res
+	}
+}
+
+func executeProbe(target ModelTarget, hostCallbackID string, start time.Time, nowStr string) TestResult {
+	res := TestResult{
+		Key:         target.Key,
+		ChannelID:   target.ChannelID,
+		ChannelName: target.ChannelName,
+		Provider:    target.Provider,
+		Model:       target.Model,
+		TTFTMs:      -1,
+		TotalMs:     0,
+		Status:      "Error",
+		StatusCode:  0,
+		Message:     "",
+		TestedAt:    nowStr,
+	}
+
+	if res.Key == "" {
+		res.Key = target.ChannelID + "::" + target.Model
 	}
 
 	// 极简 Prompt，请求仅生成 1 个 Token，stream: true
@@ -630,9 +684,12 @@ func probeSingleModel(target ModelTarget, hostCallbackID string) TestResult {
 }
 
 // runBatchSpeedTest 使用 Goroutine 并发批量测试所有模型
-func runBatchSpeedTest(items []ModelTarget, concurrency int, hostCallbackID string) ([]TestResult, BatchSummary) {
+func runBatchSpeedTest(items []ModelTarget, concurrency int, timeoutSec int, hostCallbackID string) ([]TestResult, BatchSummary) {
 	if concurrency <= 0 || concurrency > 50 {
 		concurrency = defaultConcurrency
+	}
+	if timeoutSec <= 0 {
+		timeoutSec = defaultTimeoutSeconds
 	}
 
 	results := make([]TestResult, len(items))
@@ -650,7 +707,7 @@ func runBatchSpeedTest(items []ModelTarget, concurrency int, hostCallbackID stri
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			results[idx] = probeSingleModel(target, hostCallbackID)
+			results[idx] = probeSingleModel(target, hostCallbackID, timeoutSec)
 		}(i, item)
 	}
 
