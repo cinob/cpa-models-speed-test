@@ -75,7 +75,7 @@ var embeddedIndexHTML []byte
 
 const (
 	pluginName            = "cpa-models-speed-test"
-	pluginVersion         = "1.0.2"
+	pluginVersion         = "1.0.3"
 	resourcePath          = "/speedtest"
 	resourceContentType   = "text/html; charset=utf-8"
 	defaultConcurrency    = 20

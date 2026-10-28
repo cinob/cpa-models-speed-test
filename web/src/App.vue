@@ -14,6 +14,8 @@ const activeStatus = useStorage('cpa_speedtest_status_filter', 'all')
 const activeEnableStatus = useStorage('cpa_speedtest_enable_filter', 'all') // 'all' | 'enabled' | 'disabled'
 const sortBy = useStorage('cpa_speedtest_sort_by', 'default')
 const disabledModelKeys = useStorage('cpa_speedtest_disabled_keys', []) // 用户手动禁用的模型 keys
+const dedupSource = useStorage('cpa_speedtest_dedup_source', false) // 重复来源模型去重
+const selectedAccounts = useStorage('cpa_speedtest_selected_accounts', {}) // 去重模式下模型选中的测速账号: dedupKey -> channel_id
 
 // 状态
 const loadingChannels = ref(false)
@@ -182,6 +184,66 @@ async function testSingleModel(target) {
   }
 }
 
+// 切换模型的测速账号
+function selectModelAccount(dedupKey, channelId) {
+  selectedAccounts.value = {
+    ...selectedAccounts.value,
+    [dedupKey]: channelId
+  }
+}
+
+// 唯一来源模型数（用于去重筛选项提示）
+const uniqueSourceModelCount = computed(() => {
+  const set = new Set()
+  for (const m of modelList.value) {
+    set.add(`${(m.provider || '').toLowerCase()}::${m.model}`)
+  }
+  return set.size
+})
+
+// 基础模型列表：支持重复来源(Provider)及相同模型去重合并，并保留候选账号列表
+const processedModels = computed(() => {
+  if (!dedupSource.value) {
+    return modelList.value.map(m => ({
+      ...m,
+      dedupKey: m.key,
+      accounts: [{ channel_id: m.channel_id, channel_name: m.channel_name, key: m.key, disabled: isModelDisabled(m) }]
+    }))
+  }
+
+  const groups = new Map()
+  for (const m of modelList.value) {
+    const dKey = `${(m.provider || '').toLowerCase()}::${m.model}`
+    let grp = groups.get(dKey)
+    if (!grp) {
+      grp = []
+      groups.set(dKey, grp)
+    }
+    grp.push(m)
+  }
+
+  const list = []
+  for (const [dKey, items] of groups.entries()) {
+    const savedId = selectedAccounts.value[dKey]
+    let chosen = items.find(i => i.channel_id === savedId)
+    if (!chosen) {
+      // 默认优先选中未禁用的账号
+      chosen = items.find(i => !isModelDisabled(i)) || items[0]
+    }
+    list.push({
+      ...chosen,
+      dedupKey: dKey,
+      accounts: items.map(t => ({
+        channel_id: t.channel_id,
+        channel_name: t.channel_name,
+        key: t.key,
+        disabled: isModelDisabled(t)
+      }))
+    })
+  }
+  return list
+})
+
 // 所有可用的 Provider 列表
 const availableProviders = computed(() => {
   const set = new Set()
@@ -193,7 +255,7 @@ const availableProviders = computed(() => {
 
 // 过滤模型列表（包含筛选条件）
 const filteredModels = computed(() => {
-  let list = modelList.value
+  let list = processedModels.value
 
   // Provider 过滤
   if (activeProvider.value !== 'all') {
@@ -226,6 +288,7 @@ const filteredModels = computed(() => {
     list = list.filter(m =>
       m.model.toLowerCase().includes(q) ||
       (m.channel_name && m.channel_name.toLowerCase().includes(q)) ||
+      (m.accounts && m.accounts.some(a => a.channel_name && a.channel_name.toLowerCase().includes(q))) ||
       (m.provider && m.provider.toLowerCase().includes(q))
     )
   }
@@ -342,7 +405,8 @@ function stopTesting() {
 
 // 统计看板数据
 const stats = computed(() => {
-  let total = modelList.value.length
+  const base = processedModels.value
+  let total = base.length
   let enabledCount = 0
   let tested = 0
   let success = 0
@@ -351,7 +415,7 @@ const stats = computed(() => {
   let sumTTFT = 0
   let fastest = null
 
-  for (const m of modelList.value) {
+  for (const m of base) {
     if (!isModelDisabled(m)) enabledCount++
     const res = testResults.value[m.key]
     if (!res) continue
@@ -413,7 +477,7 @@ function exportMarkdownReport() {
     '| 渠道账号 | 类型 | 模型名称 | 首字延迟 (TTFT) | 状态 | 详情 |',
     '| :--- | :--- | :--- | :--- | :--- | :--- |'
   ]
-  for (const m of modelList.value) {
+  for (const m of processedModels.value) {
     const res = testResults.value[m.key]
     const ttft = res && res.status === 'Success' ? `${res.ttft_ms} ms` : '-'
     const status = isModelDisabled(m) ? '已禁用' : (res ? res.status : '未测试')
@@ -482,6 +546,28 @@ function setupWebMCP() {
         name: 'speedtest.get_stats',
         description: '获取当前测速统计看板指标',
         execute: () => stats.value
+      },
+      {
+        name: 'speedtest.toggle_dedup',
+        description: '切换重复来源模型去重状态 (布尔值)',
+        parameters: { enabled: 'boolean' },
+        execute: (args) => {
+          if (typeof args?.enabled === 'boolean') {
+            dedupSource.value = args.enabled
+          } else {
+            dedupSource.value = !dedupSource.value
+          }
+          return { dedup: dedupSource.value, count: processedModels.value.length }
+        }
+      },
+      {
+        name: 'speedtest.select_account',
+        description: '选择去重模式下指定模型使用的测速渠道账号',
+        parameters: { dedup_key: 'string', channel_id: 'string' },
+        execute: (args) => {
+          selectModelAccount(args.dedup_key, args.channel_id)
+          return { ok: true, selected: selectedAccounts.value[args.dedup_key] }
+        }
       }
     ],
     runAll: testAllModels,
@@ -491,6 +577,12 @@ function setupWebMCP() {
     },
     setTimeout: (sec) => {
       timeout.value = Number(sec) || 30
+    },
+    toggleDedup: (val) => {
+      dedupSource.value = typeof val === 'boolean' ? val : !dedupSource.value
+    },
+    selectAccount: (dedupKey, channelId) => {
+      selectModelAccount(dedupKey, channelId)
     },
     runSingle: (channelId, model) => {
       const target = modelList.value.find(m => (m.channel_id === channelId || m.channel_name === channelId) && m.model === model)
@@ -760,6 +852,28 @@ onMounted(() => {
         </div>
       </div>
 
+      <!-- 来源模型去重筛选 Chips -->
+      <div class="filter-row">
+        <span class="filter-label">去重筛选:</span>
+        <div class="filter-chips">
+          <button
+            class="chip"
+            :class="{ active: !dedupSource }"
+            @click="dedupSource = false"
+          >
+            全部展示 ({{ modelList.length }})
+          </button>
+          <button
+            class="chip"
+            :class="{ active: dedupSource }"
+            title="同一来源(Provider)下多个账号拥有相同模型时进行去重，并可自选测速账号"
+            @click="dedupSource = true"
+          >
+            ✨ 重复来源模型去重 ({{ uniqueSourceModelCount }})
+          </button>
+        </div>
+      </div>
+
       <!-- 启用/禁用与测速状态筛选 Chips -->
       <div class="filter-row">
         <span class="filter-label">状态筛选:</span>
@@ -831,7 +945,7 @@ onMounted(() => {
     <main v-else-if="viewMode === 'grid'" class="model-grid">
       <div
         v-for="item in filteredModels"
-        :key="item.key"
+        :key="item.dedupKey || item.key"
         class="model-card"
         :class="[
           getLatencyClass(testResults[item.key], isModelDisabled(item)),
@@ -849,7 +963,25 @@ onMounted(() => {
           </div>
 
           <div class="header-right">
-            <span class="channel-name" :title="item.channel_name">{{ item.channel_name }}</span>
+            <!-- 拥有多个账号且去重开启时，显示账号切换下拉选择器 -->
+            <select
+              v-if="dedupSource && item.accounts && item.accounts.length > 1"
+              class="channel-select"
+              :value="item.channel_id"
+              title="切换测速账号"
+              @click.stop
+              @change="selectModelAccount(item.dedupKey, $event.target.value)"
+            >
+              <option
+                v-for="acc in item.accounts"
+                :key="acc.channel_id"
+                :value="acc.channel_id"
+              >
+                {{ acc.channel_name }}{{ acc.disabled ? ' (已禁用)' : '' }}
+              </option>
+            </select>
+            <span v-else class="channel-name" :title="item.channel_name">{{ item.channel_name }}</span>
+
             <!-- 模型禁用/启用 Toggle -->
             <label class="toggle-switch" :title="isModelDisabled(item) ? '点击启用该模型' : '点击禁用该模型 (禁用后不参与测速)'">
               <input
@@ -954,7 +1086,7 @@ onMounted(() => {
         <tbody>
           <tr
             v-for="item in filteredModels"
-            :key="item.key"
+            :key="item.dedupKey || item.key"
             :class="[getLatencyClass(testResults[item.key], isModelDisabled(item)), { 'row-disabled': isModelDisabled(item) }]"
           >
             <td>
@@ -967,7 +1099,25 @@ onMounted(() => {
                 <span class="slider-sm"></span>
               </label>
             </td>
-            <td class="cell-channel">{{ item.channel_name }}</td>
+            <td class="cell-channel">
+              <select
+                v-if="dedupSource && item.accounts && item.accounts.length > 1"
+                class="channel-select-table"
+                :value="item.channel_id"
+                title="切换测速账号"
+                @click.stop
+                @change="selectModelAccount(item.dedupKey, $event.target.value)"
+              >
+                <option
+                  v-for="acc in item.accounts"
+                  :key="acc.channel_id"
+                  :value="acc.channel_id"
+                >
+                  {{ acc.channel_name }}{{ acc.disabled ? ' (已禁用)' : '' }}
+                </option>
+              </select>
+              <span v-else>{{ item.channel_name }}</span>
+            </td>
             <td>
               <span class="provider-pill" :style="{ color: getProviderColor(item.provider), borderColor: getProviderColor(item.provider) + '44' }">
                 {{ item.provider }}
@@ -1692,6 +1842,39 @@ onMounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.channel-select {
+  background: #0f172a;
+  border: 1px solid #3b82f6;
+  color: #38bdf8;
+  font-size: 0.75rem;
+  padding: 0.15rem 0.35rem;
+  border-radius: 4px;
+  max-width: 130px;
+  cursor: pointer;
+  outline: none;
+}
+
+.channel-select:hover {
+  border-color: #60a5fa;
+  background: #1e293b;
+}
+
+.channel-select-table {
+  background: #0f172a;
+  border: 1px solid #3b82f6;
+  color: #38bdf8;
+  font-size: 0.775rem;
+  padding: 0.2rem 0.45rem;
+  border-radius: 4px;
+  cursor: pointer;
+  outline: none;
+}
+
+.channel-select-table:hover {
+  border-color: #60a5fa;
+  background: #1e293b;
 }
 
 /* 启用/禁用 Toggle 开关 */
