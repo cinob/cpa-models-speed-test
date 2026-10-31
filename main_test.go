@@ -67,8 +67,8 @@ func TestManagementRegister(t *testing.T) {
 	if len(reg.Resources) != 1 {
 		t.Fatalf("expected exactly 1 resource route, got %d", len(reg.Resources))
 	}
-	if reg.Resources[0].Path != resourcePath || reg.Resources[0].Menu != "模型测速" {
-		t.Errorf("expected resource route %q with Menu '模型测速', got %+v", resourcePath, reg.Resources[0])
+	if reg.Resources[0].Path != resourcePath || reg.Resources[0].Menu != "Speed Test" {
+		t.Errorf("expected resource route %q with Menu 'Speed Test', got %+v", resourcePath, reg.Resources[0])
 	}
 
 	// 检查管理 API 路由
@@ -270,7 +270,22 @@ func TestProbeSingleModelDisabled(t *testing.T) {
 	if res.Status != "Disabled" {
 		t.Errorf("expected status 'Disabled', got %q", res.Status)
 	}
-	if res.Message != "模型已禁用" {
-		t.Errorf("expected message '模型已禁用', got %q", res.Message)
+	if res.Message != "Model is disabled" {
+		t.Errorf("expected message 'Model is disabled', got %q", res.Message)
+	}
+}
+
+func TestPanicRecoveryEnvelope(t *testing.T) {
+	// Verify that errorEnvelope produces valid JSON for panic recovery
+	envBytes := errorEnvelope("plugin_panic", "simulated panic")
+	var env envelope
+	if err := json.Unmarshal(envBytes, &env); err != nil {
+		t.Fatalf("unmarshal errorEnvelope: %v", err)
+	}
+	if env.OK {
+		t.Errorf("expected ok=false")
+	}
+	if env.Error == nil || env.Error.Code != "plugin_panic" {
+		t.Errorf("expected code 'plugin_panic', got %+v", env.Error)
 	}
 }

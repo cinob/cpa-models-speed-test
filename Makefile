@@ -17,8 +17,8 @@ OUTPUT := $(BIN_DIR)/$(PLUGIN_NAME).$(PLUGIN_EXT)
 all: build-web build
 
 build-web:
-	@echo "Building frontend with Bun..."
-	@cd web && bun install && bun run build
+	@echo "Building frontend..."
+	@cd web && (which bun >/dev/null 2>&1 && bun install && bun run build || (npm install && npm run build))
 
 build: $(OUTPUT)
 
@@ -27,7 +27,7 @@ $(BIN_DIR):
 
 $(OUTPUT): main.go web/dist/index.html | $(BIN_DIR)
 	@echo "Building CGO plugin library $(OUTPUT)..."
-	go build -buildmode=c-shared -o $(OUTPUT) .
+	go build -buildvcs=false -buildmode=c-shared -ldflags="-s -w" -o $(OUTPUT) .
 	@rm -f $(BIN_DIR)/$(PLUGIN_NAME).h
 
 test:

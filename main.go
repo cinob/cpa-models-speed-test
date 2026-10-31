@@ -215,7 +215,13 @@ func cliproxy_plugin_init(host *C.cliproxy_host_api, plugin *C.cliproxy_plugin_a
 }
 
 //export cliproxyPluginCall
-func cliproxyPluginCall(method *C.char, request *C.uint8_t, requestLen C.size_t, response *C.cliproxy_buffer) C.int {
+func cliproxyPluginCall(method *C.char, request *C.uint8_t, requestLen C.size_t, response *C.cliproxy_buffer) (ret C.int) {
+	defer func() {
+		if r := recover(); r != nil {
+			writeResponse(response, errorEnvelope("plugin_panic", fmt.Sprintf("panic recovered in plugin: %v", r)))
+			ret = 1
+		}
+	}()
 	if response != nil {
 		response.ptr = nil
 		response.len = 0
@@ -257,8 +263,8 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 			Resources: []pluginapi.ResourceRoute{
 				{
 					Path:        resourcePath,
-					Menu:        "模型测速",
-					Description: "一键批量测试所有配置渠道的模型首字延迟 (TTFT) 与可用性",
+					Menu:        "Speed Test",
+					Description: "Batch latency (TTFT) and availability benchmarking for upstream models",
 				},
 			},
 			Routes: []pluginapi.ManagementRoute{
@@ -297,13 +303,13 @@ func pluginRegistration() registration {
 					Name:        "concurrency",
 					Type:        "int",
 					Default:     defaultConcurrency,
-					Description: "并发测速 Goroutine 数量限制 (默认 20)",
+					Description: "Concurrent probe worker limit (default 20)",
 				},
 				{
 					Name:        "timeout",
 					Type:        "int",
 					Default:     defaultTimeoutSeconds,
-					Description: "单次测速超时时间限制 (秒，默认 30)",
+					Description: "Single probe timeout limit in seconds (default 30)",
 				},
 			},
 		},
@@ -502,7 +508,7 @@ func fetchChannelsAndModels() (ChannelsResponse, error) {
 	}, nil
 }
 
-// probeSingleModel 后端代发流式轻量探测：发送最简 Prompt，收到首个 Token 时立即主动断开连接计算精确 TTFT，支持可配置超时
+// probeSingleModel probes model latency via streaming request: sends minimal prompt, closes stream upon first token for precise TTFT
 func probeSingleModel(target ModelTarget, hostCallbackID string, timeoutSec int) TestResult {
 	if timeoutSec <= 0 {
 		timeoutSec = defaultTimeoutSeconds
@@ -531,13 +537,22 @@ func probeSingleModel(target ModelTarget, hostCallbackID string, timeoutSec int)
 
 	if target.Disabled {
 		res.Status = "Disabled"
-		res.Message = "模型已禁用"
+		res.Message = "Model is disabled"
 		return res
 	}
 
 	done := make(chan TestResult, 1)
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				resErr := res
+				resErr.Status = "Error"
+				resErr.Message = fmt.Sprintf("panic in probe: %v", r)
+				resErr.TotalMs = time.Since(start).Milliseconds()
+				done <- resErr
+			}
+		}()
 		done <- executeProbe(target, hostCallbackID, start, nowStr)
 	}()
 
@@ -548,7 +563,7 @@ func probeSingleModel(target ModelTarget, hostCallbackID string, timeoutSec int)
 		res.TotalMs = time.Since(start).Milliseconds()
 		res.StatusCode = http.StatusGatewayTimeout
 		res.Status = "Error"
-		res.Message = fmt.Sprintf("测速超时 (超过 %d 秒)", timeoutSec)
+		res.Message = fmt.Sprintf("Speed test timed out (> %d s)", timeoutSec)
 		return res
 	}
 }
@@ -572,15 +587,23 @@ func executeProbe(target ModelTarget, hostCallbackID string, start time.Time, no
 		res.Key = target.ChannelID + "::" + target.Model
 	}
 
-	// 极简 Prompt，请求仅生成 1 个 Token，stream: true
-	body, errBody := json.Marshal(map[string]any{
-		"model":      target.Model,
-		"stream":     true,
-		"max_tokens": 1,
+	// Minimal Prompt with stream: true
+	// For reasoning models (e.g. o1*, o3*), use max_completion_tokens instead of max_tokens
+	reqBody := map[string]any{
+		"model":  target.Model,
+		"stream": true,
 		"messages": []map[string]string{
 			{"role": "user", "content": "1"},
 		},
-	})
+	}
+	lowerModel := strings.ToLower(target.Model)
+	if strings.HasPrefix(lowerModel, "o1") || strings.HasPrefix(lowerModel, "o3") || strings.Contains(lowerModel, "reasoning") {
+		reqBody["max_completion_tokens"] = 1
+	} else {
+		reqBody["max_tokens"] = 1
+	}
+
+	body, errBody := json.Marshal(reqBody)
 	if errBody != nil {
 		res.Message = "marshal body failed: " + errBody.Error()
 		res.TotalMs = time.Since(start).Milliseconds()
@@ -762,6 +785,10 @@ func closeHostModelStream(streamID string) error {
 
 func isQuotaError(msg string) bool {
 	lower := strings.ToLower(msg)
+	// Guard against false positives like "context deadline exceeded"
+	if strings.Contains(lower, "deadline exceeded") {
+		return false
+	}
 	return strings.Contains(lower, "429") ||
 		strings.Contains(lower, "quota") ||
 		strings.Contains(lower, "rate limit") ||
@@ -770,16 +797,18 @@ func isQuotaError(msg string) bool {
 		strings.Contains(lower, "insufficient") ||
 		strings.Contains(lower, "credit") ||
 		strings.Contains(lower, "billing") ||
-		strings.Contains(lower, "exceeded") ||
 		strings.Contains(lower, "exhausted") ||
-		strings.Contains(lower, "resource_exhausted")
+		strings.Contains(lower, "resource_exhausted") ||
+		strings.Contains(lower, "quota exceeded") ||
+		strings.Contains(lower, "limit exceeded") ||
+		(strings.Contains(lower, "exceeded") && !strings.Contains(lower, "deadline"))
 }
 
 func getIndexHTML() []byte {
 	if len(embeddedIndexHTML) > 0 {
 		return embeddedIndexHTML
 	}
-	return []byte("<!doctype html><html><body><h3>CPA 模型测速面板正在加载...</h3><p>请先在 web/ 目录执行 bun run build 生成前端资产。</p></body></html>")
+	return []byte("<!doctype html><html><body><h3>CPA Speed Test Panel Loading...</h3><p>Please run <code>npm run build</code> in <code>web/</code> to bundle frontend assets.</p></body></html>")
 }
 
 func jsonResponse(statusCode int, data any) managementResponse {

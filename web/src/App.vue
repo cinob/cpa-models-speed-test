@@ -1,6 +1,19 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useStorage, useClipboard } from '@vueuse/core'
+import { t, currentLang, setLanguage } from './i18n'
+
+// 动态同步页面标题与 HTML 语言属性
+watch(
+  () => currentLang.value,
+  (lang) => {
+    if (typeof document !== 'undefined') {
+      document.title = t('app.title')
+      document.documentElement.lang = lang || 'en'
+    }
+  },
+  { immediate: true }
+)
 
 // 持久化存储与设置
 const managementKey = useStorage('cpa_management_key', '')
@@ -10,6 +23,7 @@ const concurrency = useStorage('cpa_speedtest_concurrency', 10) // 并发数 (5/
 const serialDelay = useStorage('cpa_speedtest_serial_delay', 500) // 串行模式防限流等待间隔 (毫秒)
 const timeout = useStorage('cpa_speedtest_timeout', 30) // 单次测速超时限制 (秒，默认 30)
 const activeProvider = useStorage('cpa_speedtest_provider_filter', 'all')
+const activeAccount = useStorage('cpa_speedtest_account_filter', 'all')
 const activeStatus = useStorage('cpa_speedtest_status_filter', 'all')
 const activeEnableStatus = useStorage('cpa_speedtest_enable_filter', 'all') // 'all' | 'enabled' | 'disabled'
 const sortBy = useStorage('cpa_speedtest_sort_by', 'default')
@@ -82,9 +96,9 @@ async function apiFetch(endpoint, options = {}) {
 
   const res = await fetch(mgmtUrl, { ...options, headers })
   if (res.status === 401 || res.status === 403) {
-    authErrorTip.value = `管理密码鉴权失败 (HTTP ${res.status})：请点击右上角「🔑 设置管理密码」输入 CPA 控制面板密码 (management-key)`
+    authErrorTip.value = t('auth.errorAlert', { status: res.status })
     showKeyConfig.value = true
-    throw new Error(`Management 鉴权失败 (${res.status})，请输入正确的管理密码`)
+    throw new Error(`Management auth failed (${res.status})`)
   }
   if (!res.ok) {
     const errText = await res.text()
@@ -192,10 +206,19 @@ function selectModelAccount(dedupKey, channelId) {
   }
 }
 
+// 切换 Provider 时重置账号筛选
+watch(activeProvider, () => {
+  activeAccount.value = 'all'
+})
+
 // 唯一来源模型数（用于去重筛选项提示）
 const uniqueSourceModelCount = computed(() => {
   const set = new Set()
-  for (const m of modelList.value) {
+  let list = modelList.value
+  if (activeAccount.value !== 'all') {
+    list = list.filter(m => m.channel_id === activeAccount.value)
+  }
+  for (const m of list) {
     set.add(`${(m.provider || '').toLowerCase()}::${m.model}`)
   }
   return set.size
@@ -203,8 +226,13 @@ const uniqueSourceModelCount = computed(() => {
 
 // 基础模型列表：支持重复来源(Provider)及相同模型去重合并，并保留候选账号列表
 const processedModels = computed(() => {
-  if (!dedupSource.value) {
-    return modelList.value.map(m => ({
+  let baseList = modelList.value
+  if (activeAccount.value !== 'all') {
+    baseList = baseList.filter(m => m.channel_id === activeAccount.value)
+  }
+
+  if (!dedupSource.value || activeAccount.value !== 'all') {
+    return baseList.map(m => ({
       ...m,
       dedupKey: m.key,
       accounts: [{ channel_id: m.channel_id, channel_name: m.channel_name, key: m.key, disabled: isModelDisabled(m) }]
@@ -212,7 +240,7 @@ const processedModels = computed(() => {
   }
 
   const groups = new Map()
-  for (const m of modelList.value) {
+  for (const m of baseList) {
     const dKey = `${(m.provider || '').toLowerCase()}::${m.model}`
     let grp = groups.get(dKey)
     if (!grp) {
@@ -251,6 +279,15 @@ const availableProviders = computed(() => {
     if (m.provider) set.add(m.provider.toLowerCase())
   }
   return Array.from(set).sort()
+})
+
+// 当前可选的渠道账号列表（若筛选了 Provider 则级联过滤）
+const availableAccounts = computed(() => {
+  let list = channels.value
+  if (activeProvider.value !== 'all') {
+    list = list.filter(c => (c.provider || '').toLowerCase() === activeProvider.value.toLowerCase())
+  }
+  return list
 })
 
 // 过滤模型列表（包含筛选条件）
@@ -474,17 +511,17 @@ function getProviderColor(provider = '') {
 // 导出测试报告 (Markdown 格式)
 function exportMarkdownReport() {
   const rows = [
-    '| 渠道账号 | 类型 | 模型名称 | 首字延迟 (TTFT) | 状态 | 详情 |',
+    `| ${t('report.thChannel')} | ${t('report.thType')} | ${t('report.thModel')} | ${t('report.thTtft')} | ${t('report.thStatus')} | ${t('report.thDetails')} |`,
     '| :--- | :--- | :--- | :--- | :--- | :--- |'
   ]
   for (const m of processedModels.value) {
     const res = testResults.value[m.key]
     const ttft = res && res.status === 'Success' ? `${res.ttft_ms} ms` : '-'
-    const status = isModelDisabled(m) ? '已禁用' : (res ? res.status : '未测试')
+    const status = isModelDisabled(m) ? t('card.disabled') : (res ? res.status : t('card.untested'))
     const msg = res ? (res.message || 'OK') : '-'
     rows.push(`| ${m.channel_name} | ${m.provider} | \`${m.model}\` | **${ttft}** | ${status} | ${msg} |`)
   }
-  const md = `# CPA 模型延迟测速报告\n- 生成时间: ${new Date().toLocaleString()}\n- 总模型数: ${stats.value.total} | 启用: ${stats.value.enabledCount} | 成功: ${stats.value.success} | 限流: ${stats.value.quota} | 失败: ${stats.value.error} | 平均 TTFT: ${stats.value.avgTTFT} ms\n\n` + rows.join('\n')
+  const md = `# ${t('report.title')}\n- ${t('report.generatedAt')} ${new Date().toLocaleString()}\n- ${t('report.total')}: ${stats.value.total} | ${t('report.enabled')}: ${stats.value.enabledCount} | ${t('report.success')}: ${stats.value.success} | ${t('report.limited')}: ${stats.value.quota} | ${t('report.failed')}: ${stats.value.error} | ${t('report.avgTtft')}: ${stats.value.avgTTFT} ms\n\n` + rows.join('\n')
   copy(md)
 }
 
@@ -568,6 +605,15 @@ function setupWebMCP() {
           selectModelAccount(args.dedup_key, args.channel_id)
           return { ok: true, selected: selectedAccounts.value[args.dedup_key] }
         }
+      },
+      {
+        name: 'speedtest.set_account_filter',
+        description: '设置或清除当前测速账号筛选 (channel_id 或 "all")',
+        parameters: { account_id: 'string' },
+        execute: (args) => {
+          if (args?.account_id) activeAccount.value = args.account_id
+          return { activeAccount: activeAccount.value, count: processedModels.value.length }
+        }
       }
     ],
     runAll: testAllModels,
@@ -583,6 +629,9 @@ function setupWebMCP() {
     },
     selectAccount: (dedupKey, channelId) => {
       selectModelAccount(dedupKey, channelId)
+    },
+    setAccountFilter: (channelId) => {
+      activeAccount.value = channelId || 'all'
     },
     runSingle: (channelId, model) => {
       const target = modelList.value.find(m => (m.channel_id === channelId || m.channel_name === channelId) && m.model === model)
@@ -617,7 +666,7 @@ onMounted(() => {
         <span class="alert-text">{{ authErrorTip }}</span>
       </div>
       <button class="btn btn-sm btn-primary" @click="showKeyConfig = true">
-        立即填写密码
+        {{ t('auth.enterKeyNow') }}
       </button>
     </div>
 
@@ -626,8 +675,8 @@ onMounted(() => {
       <div class="brand">
         <div class="logo-badge">⚡</div>
         <div>
-          <h1 class="brand-title">CPA 模型延迟测速</h1>
-          <p class="brand-subtitle">轻量流式首字延迟探测 (TTFT) • 高并发渠道基准测试</p>
+          <h1 class="brand-title">{{ t('app.title') }}</h1>
+          <p class="brand-subtitle">{{ t('app.subtitle') }}</p>
         </div>
       </div>
 
@@ -638,18 +687,18 @@ onMounted(() => {
             <button
               class="seg-btn"
               :class="{ active: testMode === 'parallel' }"
-              title="并行高并发测速，耗时最短"
+              :title="t('nav.modeParallelTitle')"
               @click="testMode = 'parallel'"
             >
-              ⚡ 并行
+              {{ t('nav.modeParallel') }}
             </button>
             <button
               class="seg-btn"
               :class="{ active: testMode === 'serial' }"
-              title="串行逐个测速，防免费平台频控 (429 限流)"
+              :title="t('nav.modeSerialTitle')"
               @click="testMode = 'serial'"
             >
-              🚶 串行防限流
+              {{ t('nav.modeSerial') }}
             </button>
           </div>
 
@@ -658,37 +707,37 @@ onMounted(() => {
             v-if="testMode === 'parallel'"
             v-model="concurrency"
             class="param-select"
-            title="并发请求数"
+            :title="t('nav.concurrencyOpt', { n: concurrency })"
           >
-            <option :value="5">5 并发</option>
-            <option :value="10">10 并发</option>
-            <option :value="20">20 并发</option>
-            <option :value="30">30 并发</option>
+            <option :value="5">{{ t('nav.concurrencyOpt', { n: 5 }) }}</option>
+            <option :value="10">{{ t('nav.concurrencyOpt', { n: 10 }) }}</option>
+            <option :value="20">{{ t('nav.concurrencyOpt', { n: 20 }) }}</option>
+            <option :value="30">{{ t('nav.concurrencyOpt', { n: 30 }) }}</option>
           </select>
           <select
             v-else
             v-model="serialDelay"
             class="param-select"
-            title="每个模型测完后等待间隔，防触发平台频控"
+            :title="t('nav.delayMs', { n: serialDelay })"
           >
-            <option :value="0">无延迟</option>
-            <option :value="300">间隔 300ms</option>
-            <option :value="500">间隔 500ms</option>
-            <option :value="1000">间隔 1 秒</option>
-            <option :value="2000">间隔 2 秒</option>
+            <option :value="0">{{ t('nav.delayNo') }}</option>
+            <option :value="300">{{ t('nav.delayMs', { n: 300 }) }}</option>
+            <option :value="500">{{ t('nav.delayMs', { n: 500 }) }}</option>
+            <option :value="1000">{{ t('nav.delaySec', { n: 1 }) }}</option>
+            <option :value="2000">{{ t('nav.delaySec', { n: 2 }) }}</option>
           </select>
 
           <!-- 测速超时选项 (串行与并行通用) -->
           <select
             v-model="timeout"
             class="param-select"
-            title="单次测速超时时间限制 (默认 30s)"
+            :title="t('nav.timeoutSec', { n: timeout })"
           >
-            <option :value="10">10s 超时</option>
-            <option :value="15">15s 超时</option>
-            <option :value="30">30s 超时</option>
-            <option :value="60">60s 超时</option>
-            <option :value="90">90s 超时</option>
+            <option :value="10">{{ t('nav.timeoutSec', { n: 10 }) }}</option>
+            <option :value="15">{{ t('nav.timeoutSec', { n: 15 }) }}</option>
+            <option :value="30">{{ t('nav.timeoutSec', { n: 30 }) }}</option>
+            <option :value="60">{{ t('nav.timeoutSec', { n: 60 }) }}</option>
+            <option :value="90">{{ t('nav.timeoutSec', { n: 90 }) }}</option>
           </select>
         </div>
 
@@ -696,7 +745,7 @@ onMounted(() => {
         <button
           class="btn btn-primary"
           :disabled="testingAll || loadingChannels || testableModels.length === 0"
-          :title="`测试当前筛选列表中已启用的 ${testableModels.length} 个模型`"
+          :title="t('nav.batchTest', { n: testableModels.length })"
           @click="testAllModels"
         >
           <span v-if="testingAll" class="spinner"></span>
@@ -704,39 +753,55 @@ onMounted(() => {
           <span>
             {{ testingAll
                 ? (testMode === 'serial'
-                    ? `测速中 (${currentProgress.current}/${currentProgress.total})...`
-                    : `正在并发测速...`)
-                : `一键测速 (${testableModels.length}个)`
+                    ? t('nav.testingProgress', { current: currentProgress.current, total: currentProgress.total })
+                    : t('nav.testingBatch'))
+                : t('nav.batchTest', { n: testableModels.length })
             }}
           </span>
         </button>
 
         <!-- 停止测速按钮 (测速中可见) -->
-        <button v-if="testingAll" class="btn btn-danger" title="立即终止本次测速" @click="stopTesting">
-          ⏹ 停止
+        <button v-if="testingAll" class="btn btn-danger" :title="t('nav.stopTitle')" @click="stopTesting">
+          {{ t('nav.stop') }}
         </button>
 
         <!-- 刷新列表 -->
         <button class="btn btn-secondary" :disabled="loadingChannels" @click="loadChannelsAndModels">
           <span class="icon">🔄</span>
-          <span>刷新</span>
+          <span>{{ t('nav.refresh') }}</span>
         </button>
 
         <!-- 导出报告 -->
         <button class="btn btn-secondary" :disabled="stats.tested === 0" @click="exportMarkdownReport">
           <span class="icon">📋</span>
-          <span>{{ copied ? '已复制报告!' : '导出报告' }}</span>
+          <span>{{ copied ? t('nav.exported') : t('nav.export') }}</span>
         </button>
+
+        <!-- 语言切换 / Language Switcher -->
+        <select
+          :value="currentLang"
+          class="param-select lang-select"
+          title="Language / 语言 / Язык"
+          @change="setLanguage($event.target.value)"
+        >
+          <option value="en">🌐 English</option>
+          <option value="ru">🌐 Русский</option>
+          <option value="zh-CN">🌐 简体中文</option>
+          <option value="zh-TW">🌐 繁體中文</option>
+          <option value="vi">🌐 Tiếng Việt</option>
+          <option value="ko">🌐 한국어</option>
+          <option value="tr">🌐 Türkçe</option>
+        </select>
 
         <!-- 设置控制面板登录密码 -->
         <button
           class="btn btn-key-action"
           :class="{ 'has-key': !!managementKey }"
-          title="设置 CPA 控制面板登录管理密码 (Management Key)"
+          :title="managementKey ? t('nav.mgmtKeyConfigured') : t('nav.mgmtKeySet')"
           @click="showKeyConfig = !showKeyConfig"
         >
           <span class="key-icon">🔑</span>
-          <span class="key-text">{{ managementKey ? '管理密码: 已配置' : '设置管理密码' }}</span>
+          <span class="key-text">{{ managementKey ? t('nav.mgmtKeyConfigured') : t('nav.mgmtKeySet') }}</span>
           <span class="key-dot" :class="{ 'is-set': !!managementKey }"></span>
         </button>
       </div>
@@ -747,27 +812,27 @@ onMounted(() => {
       <div class="key-drawer-inner">
         <div class="key-drawer-header">
           <div class="key-header-title">
-            <span>🔑 CPA 控制面板管理密码 (Management Key)</span>
-            <span class="badge-safe">保存在浏览器本地</span>
+            <span>{{ t('auth.drawerTitle') }}</span>
+            <span class="badge-safe">{{ t('auth.drawerSafe') }}</span>
           </div>
           <button class="btn-close" @click="showKeyConfig = false">✕</button>
         </div>
         <p class="key-drawer-desc">
-          测速请求由 CPA 后端发起并鉴权。请输入您在 CPA 配置文件 <code>config.yaml</code> 中配置的 <strong>management-key</strong>（即打开 CPA Web 管理后台时所输入的访问密码）。
+          {{ t('auth.drawerDesc') }}
         </p>
         <div class="key-input-row">
           <input
             v-model="managementKey"
             type="password"
-            placeholder="请输入 CPA 控制面板的管理密码 (management-key)"
+            :placeholder="t('auth.inputPlaceholder')"
             class="input-field"
             @keyup.enter="loadChannelsAndModels(); showKeyConfig = false"
           />
           <button class="btn btn-primary" @click="loadChannelsAndModels(); showKeyConfig = false">
-            保存密码并刷新
+            {{ t('auth.saveAndRefresh') }}
           </button>
           <button v-if="managementKey" class="btn btn-secondary" @click="managementKey = ''; loadChannelsAndModels()">
-            清除
+            {{ t('auth.clear') }}
           </button>
         </div>
       </div>
@@ -776,37 +841,37 @@ onMounted(() => {
     <!-- 概览看板数据条 -->
     <section class="stats-bar">
       <div class="stat-card">
-        <span class="stat-label">总模型数</span>
+        <span class="stat-label">{{ t('stats.total') }}</span>
         <span class="stat-value">{{ stats.total }}</span>
       </div>
       <div class="stat-card">
-        <span class="stat-label">启用 / 禁用</span>
+        <span class="stat-label">{{ t('stats.enabledDisabled') }}</span>
         <span class="stat-value text-cyan">{{ stats.enabledCount }} / {{ stats.disabledCount }}</span>
       </div>
       <div class="stat-card">
-        <span class="stat-label">已测模型</span>
+        <span class="stat-label">{{ t('stats.tested') }}</span>
         <span class="stat-value text-blue">{{ stats.tested }} / {{ stats.enabledCount }}</span>
       </div>
       <div class="stat-card">
-        <span class="stat-label">极速 / 良好</span>
+        <span class="stat-label">{{ t('stats.optimalGood') }}</span>
         <span class="stat-value text-green">{{ stats.success }}</span>
       </div>
       <div class="stat-card">
-        <span class="stat-label">触发限流 (429)</span>
+        <span class="stat-label">{{ t('stats.rateLimited') }}</span>
         <span class="stat-value text-purple">{{ stats.quota }}</span>
       </div>
       <div class="stat-card">
-        <span class="stat-label">失败 / 异常</span>
+        <span class="stat-label">{{ t('stats.failedError') }}</span>
         <span class="stat-value text-red">{{ stats.error }}</span>
       </div>
       <div class="stat-card">
-        <span class="stat-label">平均 TTFT</span>
+        <span class="stat-label">{{ t('stats.avgTtft') }}</span>
         <span class="stat-value text-yellow">
           {{ stats.avgTTFT > 0 ? stats.avgTTFT + ' ms' : '-' }}
         </span>
       </div>
       <div class="stat-card stat-fastest" v-if="stats.fastest">
-        <span class="stat-label">👑 最优节点</span>
+        <span class="stat-label">{{ t('stats.fastestNode') }}</span>
         <span class="stat-value text-green">
           {{ stats.fastest.ttft_ms }} ms
           <small class="fastest-model-name">{{ stats.fastest.model }}</small>
@@ -822,7 +887,7 @@ onMounted(() => {
         <input
           v-model="searchQuery"
           type="text"
-          placeholder="搜索模型名称、渠道账号、提供方类型..."
+          :placeholder="t('toolbar.searchPlaceholder')"
           class="search-input"
         />
         <button v-if="searchQuery" class="clear-search" @click="searchQuery = ''">✕</button>
@@ -830,14 +895,14 @@ onMounted(() => {
 
       <!-- 渠道分类筛选 Chips -->
       <div class="filter-row">
-        <span class="filter-label">渠道类型:</span>
+        <span class="filter-label">{{ t('toolbar.channelType') }}</span>
         <div class="filter-chips">
           <button
             class="chip"
             :class="{ active: activeProvider === 'all' }"
             @click="activeProvider = 'all'"
           >
-            全部 ({{ modelList.length }})
+            {{ t('toolbar.allChannels', { n: modelList.length }) }}
           </button>
           <button
             v-for="p in availableProviders"
@@ -852,65 +917,90 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- 来源模型去重筛选 Chips -->
-      <div class="filter-row">
-        <span class="filter-label">去重筛选:</span>
+      <!-- 渠道账号筛选 Chips (若有多个账号可选) -->
+      <div class="filter-row" v-if="availableAccounts.length > 1">
+        <span class="filter-label">{{ t('toolbar.accountFilter') }}</span>
+        <div class="filter-chips">
+          <button
+            class="chip"
+            :class="{ active: activeAccount === 'all' }"
+            @click="activeAccount = 'all'"
+          >
+            {{ t('toolbar.allAccounts', { n: availableAccounts.length }) }}
+          </button>
+          <button
+            v-for="acc in availableAccounts"
+            :key="acc.id"
+            class="chip"
+            :class="{ active: activeAccount === acc.id }"
+            :title="acc.disabled ? `${acc.name || acc.id} (${t('card.disabled')})` : (acc.name || acc.id)"
+            @click="activeAccount = acc.id"
+          >
+            <span class="provider-dot" :style="{ backgroundColor: getProviderColor(acc.provider) }"></span>
+            {{ acc.name || acc.id }} ({{ acc.models?.length || 0 }})
+          </button>
+        </div>
+      </div>
+
+      <!-- 来源模型去重筛选 Chips (仅在未限定单个账号时有效) -->
+      <div class="filter-row" v-if="activeAccount === 'all'">
+        <span class="filter-label">{{ t('toolbar.dedupFilter') }}</span>
         <div class="filter-chips">
           <button
             class="chip"
             :class="{ active: !dedupSource }"
             @click="dedupSource = false"
           >
-            全部展示 ({{ modelList.length }})
+            {{ t('toolbar.allShow', { n: modelList.length }) }}
           </button>
           <button
             class="chip"
             :class="{ active: dedupSource }"
-            title="同一来源(Provider)下多个账号拥有相同模型时进行去重，并可自选测速账号"
+            :title="t('toolbar.dedupTitle')"
             @click="dedupSource = true"
           >
-            ✨ 重复来源模型去重 ({{ uniqueSourceModelCount }})
+            {{ t('toolbar.dedupShow', { n: uniqueSourceModelCount }) }}
           </button>
         </div>
       </div>
 
       <!-- 启用/禁用与测速状态筛选 Chips -->
       <div class="filter-row">
-        <span class="filter-label">状态筛选:</span>
+        <span class="filter-label">{{ t('toolbar.statusFilter') }}</span>
         <div class="filter-chips">
-          <button class="chip" :class="{ active: activeEnableStatus === 'all' }" @click="activeEnableStatus = 'all'">全部</button>
-          <button class="chip" :class="{ active: activeEnableStatus === 'enabled' }" @click="activeEnableStatus = 'enabled'">仅启用 ({{ stats.enabledCount }})</button>
-          <button class="chip" :class="{ active: activeEnableStatus === 'disabled' }" @click="activeEnableStatus = 'disabled'">已禁用 ({{ stats.disabledCount }})</button>
+          <button class="chip" :class="{ active: activeEnableStatus === 'all' }" @click="activeEnableStatus = 'all'">{{ t('toolbar.all') }}</button>
+          <button class="chip" :class="{ active: activeEnableStatus === 'enabled' }" @click="activeEnableStatus = 'enabled'">{{ t('toolbar.enabledOnly', { n: stats.enabledCount }) }}</button>
+          <button class="chip" :class="{ active: activeEnableStatus === 'disabled' }" @click="activeEnableStatus = 'disabled'">{{ t('toolbar.disabledOnly', { n: stats.disabledCount }) }}</button>
           <span class="divider-v"></span>
-          <button class="chip" :class="{ active: activeStatus === 'all' }" @click="activeStatus = 'all'">全部结果</button>
-          <button class="chip" :class="{ active: activeStatus === 'success' }" @click="activeStatus = 'success'">正常 ({{ stats.success }})</button>
-          <button class="chip" :class="{ active: activeStatus === 'quota' }" @click="activeStatus = 'quota'">限流 ({{ stats.quota }})</button>
-          <button class="chip" :class="{ active: activeStatus === 'error' }" @click="activeStatus = 'error'">失败 ({{ stats.error }})</button>
-          <button class="chip" :class="{ active: activeStatus === 'untested' }" @click="activeStatus = 'untested'">未测 ({{ stats.enabledCount - stats.tested }})</button>
+          <button class="chip" :class="{ active: activeStatus === 'all' }" @click="activeStatus = 'all'">{{ t('toolbar.allResults') }}</button>
+          <button class="chip" :class="{ active: activeStatus === 'success' }" @click="activeStatus = 'success'">{{ t('toolbar.normal', { n: stats.success }) }}</button>
+          <button class="chip" :class="{ active: activeStatus === 'quota' }" @click="activeStatus = 'quota'">{{ t('toolbar.limited', { n: stats.quota }) }}</button>
+          <button class="chip" :class="{ active: activeStatus === 'error' }" @click="activeStatus = 'error'">{{ t('toolbar.failed', { n: stats.error }) }}</button>
+          <button class="chip" :class="{ active: activeStatus === 'untested' }" @click="activeStatus = 'untested'">{{ t('toolbar.untested', { n: stats.enabledCount - stats.tested }) }}</button>
         </div>
       </div>
 
       <!-- 批量操作与视图切换 -->
       <div class="view-and-sort">
         <div class="batch-actions">
-          <span class="action-desc">当前筛选: {{ filteredModels.length }} 个模型 (可测 {{ testableModels.length }} 个)</span>
-          <button class="btn-text" @click="enableAllFiltered">全部启用</button>
-          <button class="btn-text" @click="disableAllFiltered">全部禁用</button>
+          <span class="action-desc">{{ t('toolbar.filterCount', { total: filteredModels.length, testable: testableModels.length }) }}</span>
+          <button class="btn-text" @click="enableAllFiltered">{{ t('toolbar.enableAll') }}</button>
+          <button class="btn-text" @click="disableAllFiltered">{{ t('toolbar.disableAll') }}</button>
         </div>
 
         <div class="sort-and-view-group">
           <select v-model="sortBy" class="sort-select">
-            <option value="default">默认渠道排序</option>
-            <option value="delay_asc">延迟从低到高 ⚡</option>
-            <option value="delay_desc">延迟从高到低</option>
-            <option value="model_asc">模型名称 A-Z</option>
+            <option value="default">{{ t('toolbar.sortDefault') }}</option>
+            <option value="delay_asc">{{ t('toolbar.sortDelayAsc') }}</option>
+            <option value="delay_desc">{{ t('toolbar.sortDelayDesc') }}</option>
+            <option value="model_asc">{{ t('toolbar.sortModelAsc') }}</option>
           </select>
 
           <div class="view-toggle">
             <button
               class="toggle-btn"
               :class="{ active: viewMode === 'grid' }"
-              title="卡片网格视图"
+              :title="t('toolbar.viewGrid')"
               @click="viewMode = 'grid'"
             >
               ⊞
@@ -918,7 +1008,7 @@ onMounted(() => {
             <button
               class="toggle-btn"
               :class="{ active: viewMode === 'table' }"
-              title="紧凑列表视图"
+              :title="t('toolbar.viewTable')"
               @click="viewMode = 'table'"
             >
               ☰
@@ -931,14 +1021,14 @@ onMounted(() => {
     <!-- 加载中提示 -->
     <div v-if="loadingChannels" class="state-container">
       <div class="spinner-large"></div>
-      <p>正在读取后端配置的所有上游渠道与模型...</p>
+      <p>{{ t('state.loading') }}</p>
     </div>
 
     <!-- 空列表提示 -->
     <div v-else-if="filteredModels.length === 0" class="state-container">
       <span class="empty-icon">📂</span>
-      <p>未找到符合条件的模型</p>
-      <small v-if="modelList.length === 0">当前后端暂未配置任何渠道或凭证，请先在 CPA 中添加 Provider 凭证</small>
+      <p>{{ t('state.empty') }}</p>
+      <small v-if="modelList.length === 0">{{ t('state.emptyHint') }}</small>
     </div>
 
     <!-- 卡片网格视图 (类似 Clash/v2rayN 节点卡片) -->
@@ -968,7 +1058,7 @@ onMounted(() => {
               v-if="dedupSource && item.accounts && item.accounts.length > 1"
               class="channel-select"
               :value="item.channel_id"
-              title="切换测速账号"
+              :title="t('card.switchAccount')"
               @click.stop
               @change="selectModelAccount(item.dedupKey, $event.target.value)"
             >
@@ -977,13 +1067,13 @@ onMounted(() => {
                 :key="acc.channel_id"
                 :value="acc.channel_id"
               >
-                {{ acc.channel_name }}{{ acc.disabled ? ' (已禁用)' : '' }}
+                {{ acc.channel_name }}{{ acc.disabled ? ` (${t('card.disabled')})` : '' }}
               </option>
             </select>
             <span v-else class="channel-name" :title="item.channel_name">{{ item.channel_name }}</span>
 
             <!-- 模型禁用/启用 Toggle -->
-            <label class="toggle-switch" :title="isModelDisabled(item) ? '点击启用该模型' : '点击禁用该模型 (禁用后不参与测速)'">
+            <label class="toggle-switch" :title="isModelDisabled(item) ? t('card.enableTip') : t('card.disableTip')">
               <input
                 type="checkbox"
                 :checked="!isModelDisabled(item)"
@@ -998,20 +1088,20 @@ onMounted(() => {
         <div class="card-body">
           <div class="model-title-wrap">
             <h3 class="model-title" :title="item.model">{{ item.model }}</h3>
-            <button class="copy-btn" title="复制模型名" @click="copy(item.model)">⧉</button>
+            <button class="copy-btn" :title="t('card.copyModel')" @click="copy(item.model)">⧉</button>
           </div>
 
           <!-- 核心指标呈现：首字延迟 (TTFT) 与状态高亮 -->
           <div class="latency-display">
             <!-- 已禁用状态 -->
             <div v-if="isModelDisabled(item)" class="latency-badge disabled-badge" @click="toggleModelDisabled(item)">
-              <span class="disabled-tag">🚫 已禁用</span>
+              <span class="disabled-tag">{{ t('card.disabled') }}</span>
             </div>
 
             <!-- 测速中动画 -->
             <div v-else-if="testingKeys.has(item.key)" class="latency-badge testing">
               <span class="pulse-dot"></span>
-              <span>探测首字...</span>
+              <span>{{ t('card.probing') }}</span>
             </div>
 
             <!-- 已测出结果 -->
@@ -1026,10 +1116,10 @@ onMounted(() => {
                 <span class="ttft-unit">ms</span>
               </template>
               <template v-else-if="testResults[item.key].status === 'Quota Limit'">
-                <span>限流 (429)</span>
+                <span>{{ t('card.limited') }}</span>
               </template>
               <template v-else>
-                <span>失败 (Error)</span>
+                <span>{{ t('card.error') }}</span>
               </template>
             </div>
 
@@ -1044,13 +1134,13 @@ onMounted(() => {
         <div class="card-footer">
           <span class="status-msg" :title="testResults[item.key]?.message || ''">
             <template v-if="isModelDisabled(item)">
-              不参与测速
+              {{ t('card.notParticipating') }}
             </template>
             <template v-else-if="testResults[item.key]">
-              {{ testResults[item.key].status === 'Success' ? '✓ 连接正常' : (testResults[item.key].message || testResults[item.key].status) }}
+              {{ testResults[item.key].status === 'Success' ? t('card.connected') : (testResults[item.key].message || testResults[item.key].status) }}
             </template>
             <template v-else>
-              未测试
+              {{ t('card.untested') }}
             </template>
           </span>
 
@@ -1058,11 +1148,11 @@ onMounted(() => {
           <button
             class="btn-test-single"
             :disabled="testingKeys.has(item.key) || testingAll || isModelDisabled(item)"
-            :title="isModelDisabled(item) ? '该模型已禁用，无法测速' : '单独测速此模型'"
+            :title="isModelDisabled(item) ? t('card.disableTip') : t('card.testBtn')"
             @click="testSingleModel(item)"
           >
             <span v-if="testingKeys.has(item.key)" class="spinner-sm"></span>
-            <span v-else>{{ isModelDisabled(item) ? '已禁用' : '测速' }}</span>
+            <span v-else>{{ isModelDisabled(item) ? t('card.disabled') : t('card.testBtn') }}</span>
           </button>
         </div>
       </div>
@@ -1073,14 +1163,14 @@ onMounted(() => {
       <table class="data-table">
         <thead>
           <tr>
-            <th style="width: 70px;">状态</th>
-            <th>渠道账号</th>
-            <th>类型</th>
-            <th>模型名称</th>
-            <th>首字延迟 (TTFT)</th>
-            <th>结果状态</th>
-            <th>最近测速</th>
-            <th>操作</th>
+            <th style="width: 70px;">{{ t('table.status') }}</th>
+            <th>{{ t('table.channel') }}</th>
+            <th>{{ t('table.type') }}</th>
+            <th>{{ t('table.model') }}</th>
+            <th>{{ t('table.ttft') }}</th>
+            <th>{{ t('table.resultStatus') }}</th>
+            <th>{{ t('table.lastTested') }}</th>
+            <th>{{ t('table.action') }}</th>
           </tr>
         </thead>
         <tbody>
@@ -1090,7 +1180,7 @@ onMounted(() => {
             :class="[getLatencyClass(testResults[item.key], isModelDisabled(item)), { 'row-disabled': isModelDisabled(item) }]"
           >
             <td>
-              <label class="toggle-switch-sm" :title="isModelDisabled(item) ? '点击启用' : '点击禁用'">
+              <label class="toggle-switch-sm" :title="isModelDisabled(item) ? t('card.enableTip') : t('card.disableTip')">
                 <input
                   type="checkbox"
                   :checked="!isModelDisabled(item)"
@@ -1104,7 +1194,7 @@ onMounted(() => {
                 v-if="dedupSource && item.accounts && item.accounts.length > 1"
                 class="channel-select-table"
                 :value="item.channel_id"
-                title="切换测速账号"
+                :title="t('card.switchAccount')"
                 @click.stop
                 @change="selectModelAccount(item.dedupKey, $event.target.value)"
               >
@@ -1113,7 +1203,7 @@ onMounted(() => {
                   :key="acc.channel_id"
                   :value="acc.channel_id"
                 >
-                  {{ acc.channel_name }}{{ acc.disabled ? ' (已禁用)' : '' }}
+                  {{ acc.channel_name }}{{ acc.disabled ? ` (${t('card.disabled')})` : '' }}
                 </option>
               </select>
               <span v-else>{{ item.channel_name }}</span>
@@ -1127,22 +1217,22 @@ onMounted(() => {
               <code>{{ item.model }}</code>
             </td>
             <td>
-              <span v-if="isModelDisabled(item)" class="text-muted">已禁用</span>
-              <span v-else-if="testingKeys.has(item.key)" class="text-cyan">探测中...</span>
+              <span v-if="isModelDisabled(item)" class="text-muted">{{ t('card.disabled') }}</span>
+              <span v-else-if="testingKeys.has(item.key)" class="text-cyan">{{ t('card.probing') }}</span>
               <span v-else-if="testResults[item.key]?.status === 'Success'" class="ttft-badge-table" :class="getLatencyClass(testResults[item.key])">
                 ⚡ {{ testResults[item.key].ttft_ms }} ms
               </span>
               <span v-else-if="testResults[item.key]?.status === 'Quota Limit'" class="text-purple">
-                ⏳ 限流 429
+                ⏳ {{ t('card.limited') }}
               </span>
               <span v-else-if="testResults[item.key]?.status === 'Error'" class="text-red">
-                ✖ 失败
+                ✖ {{ t('card.error') }}
               </span>
               <span v-else class="text-muted">---</span>
             </td>
             <td>
               <span class="status-cell" :class="getLatencyClass(testResults[item.key], isModelDisabled(item))">
-                {{ isModelDisabled(item) ? '已禁用' : (testResults[item.key]?.status || '未测试') }}
+                {{ isModelDisabled(item) ? t('card.disabled') : (testResults[item.key]?.status || t('card.untested')) }}
               </span>
             </td>
             <td class="text-muted text-sm">
@@ -1154,7 +1244,7 @@ onMounted(() => {
                 :disabled="testingKeys.has(item.key) || testingAll || isModelDisabled(item)"
                 @click="testSingleModel(item)"
               >
-                {{ isModelDisabled(item) ? '已禁用' : (testingKeys.has(item.key) ? '测速中' : '测速') }}
+                {{ isModelDisabled(item) ? t('card.disabled') : (testingKeys.has(item.key) ? t('card.testingBtn') : t('card.testBtn')) }}
               </button>
             </td>
           </tr>
@@ -1166,34 +1256,34 @@ onMounted(() => {
     <div v-if="activeDetail" class="modal-backdrop" @click="activeDetail = null">
       <div class="modal-dialog" @click.stop>
         <div class="modal-header">
-          <h3>测速详情: {{ activeDetail.model }}</h3>
+          <h3>{{ t('modal.title', { model: activeDetail.model }) }}</h3>
           <button class="btn-close" @click="activeDetail = null">✕</button>
         </div>
         <div class="modal-body">
           <div class="detail-row">
-            <span class="detail-label">渠道账号:</span>
+            <span class="detail-label">{{ t('modal.channel') }}</span>
             <span class="detail-val">{{ activeDetail.channel_name }} ({{ activeDetail.channel_id }})</span>
           </div>
           <div class="detail-row">
-            <span class="detail-label">提供方类型:</span>
+            <span class="detail-label">{{ t('modal.provider') }}</span>
             <span class="detail-val">{{ activeDetail.provider }}</span>
           </div>
           <div class="detail-row">
-            <span class="detail-label">探测首字延迟 (TTFT):</span>
+            <span class="detail-label">{{ t('modal.ttft') }}</span>
             <span class="detail-val" :class="getLatencyClass(activeDetail)">
-              {{ activeDetail.ttft_ms >= 0 ? activeDetail.ttft_ms + ' ms' : '无数据' }}
+              {{ activeDetail.ttft_ms >= 0 ? activeDetail.ttft_ms + ' ms' : t('modal.noData') }}
             </span>
           </div>
           <div class="detail-row">
-            <span class="detail-label">总响应耗时:</span>
+            <span class="detail-label">{{ t('modal.totalTime') }}</span>
             <span class="detail-val">{{ activeDetail.total_ms }} ms</span>
           </div>
           <div class="detail-row">
-            <span class="detail-label">状态判定:</span>
+            <span class="detail-label">{{ t('modal.statusVerdict') }}</span>
             <span class="detail-val" :class="getLatencyClass(activeDetail)">{{ activeDetail.status }} (HTTP {{ activeDetail.status_code || '-' }})</span>
           </div>
           <div v-if="activeDetail.message" class="detail-row">
-            <span class="detail-label">响应/错误信息:</span>
+            <span class="detail-label">{{ t('modal.responseMsg') }}</span>
             <pre class="error-pre">{{ activeDetail.message }}</pre>
           </div>
         </div>
@@ -1269,6 +1359,13 @@ onMounted(() => {
   box-shadow: 0 4px 12px rgba(16, 185, 129, 0.25);
 }
 
+.brand-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
 .brand-title {
   font-size: 1.35rem;
   font-weight: 700;
@@ -1285,7 +1382,8 @@ onMounted(() => {
 .nav-actions {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.65rem;
+  flex-wrap: wrap;
 }
 
 /* 按钮样式 */
@@ -1390,6 +1488,24 @@ onMounted(() => {
 
 .param-select:hover {
   border-color: #38bdf8;
+}
+
+.lang-select {
+  background: #1e293b;
+  border: 1px solid #334155;
+  color: #94a3b8;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.45rem 0.65rem;
+  border-radius: 8px;
+  cursor: pointer;
+  outline: none;
+  transition: all 0.2s ease;
+}
+
+.lang-select:hover {
+  border-color: #38bdf8;
+  color: #f1f5f9;
 }
 
 .btn-sm {
