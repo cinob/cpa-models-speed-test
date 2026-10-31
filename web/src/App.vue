@@ -1,7 +1,19 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useStorage, useClipboard } from '@vueuse/core'
 import { t, currentLang, setLanguage } from './i18n'
+
+// 动态同步页面标题与 HTML 语言属性
+watch(
+  () => currentLang.value,
+  (lang) => {
+    if (typeof document !== 'undefined') {
+      document.title = t('app.title')
+      document.documentElement.lang = lang === 'zh' ? 'zh-CN' : lang
+    }
+  },
+  { immediate: true }
+)
 
 // 持久化存储与设置
 const managementKey = useStorage('cpa_management_key', '')
@@ -626,8 +638,20 @@ onMounted(() => {
     <header class="top-nav">
       <div class="brand">
         <div class="logo-badge">⚡</div>
-        <div>
-          <h1 class="brand-title">{{ t('app.title') }}</h1>
+        <div class="brand-text">
+          <div class="brand-title-wrap">
+            <h1 class="brand-title">{{ t('app.title') }}</h1>
+            <select
+              :value="currentLang"
+              class="param-select lang-select"
+              title="Language / 语言 / Язык"
+              @change="setLanguage($event.target.value)"
+            >
+              <option value="en">🌐 English</option>
+              <option value="ru">🌐 Русский</option>
+              <option value="zh">🌐 简体中文</option>
+            </select>
+          </div>
           <p class="brand-subtitle">{{ t('app.subtitle') }}</p>
         </div>
       </div>
@@ -1282,6 +1306,13 @@ onMounted(() => {
   box-shadow: 0 4px 12px rgba(16, 185, 129, 0.25);
 }
 
+.brand-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
 .brand-title {
   font-size: 1.35rem;
   font-weight: 700;
@@ -1298,7 +1329,8 @@ onMounted(() => {
 .nav-actions {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.65rem;
+  flex-wrap: wrap;
 }
 
 /* 按钮样式 */
