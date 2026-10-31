@@ -9,7 +9,7 @@ watch(
   (lang) => {
     if (typeof document !== 'undefined') {
       document.title = t('app.title')
-      document.documentElement.lang = lang === 'zh' ? 'zh-CN' : lang
+      document.documentElement.lang = lang || 'en'
     }
   },
   { immediate: true }
@@ -638,20 +638,8 @@ onMounted(() => {
     <header class="top-nav">
       <div class="brand">
         <div class="logo-badge">⚡</div>
-        <div class="brand-text">
-          <div class="brand-title-wrap">
-            <h1 class="brand-title">{{ t('app.title') }}</h1>
-            <select
-              :value="currentLang"
-              class="param-select lang-select"
-              title="Language / 语言 / Язык"
-              @change="setLanguage($event.target.value)"
-            >
-              <option value="en">🌐 English</option>
-              <option value="ru">🌐 Русский</option>
-              <option value="zh">🌐 简体中文</option>
-            </select>
-          </div>
+        <div>
+          <h1 class="brand-title">{{ t('app.title') }}</h1>
           <p class="brand-subtitle">{{ t('app.subtitle') }}</p>
         </div>
       </div>
@@ -762,7 +750,11 @@ onMounted(() => {
         >
           <option value="en">🌐 English</option>
           <option value="ru">🌐 Русский</option>
-          <option value="zh">🌐 简体中文</option>
+          <option value="zh-CN">🌐 简体中文</option>
+          <option value="zh-TW">🌐 繁體中文</option>
+          <option value="vi">🌐 Tiếng Việt</option>
+          <option value="ko">🌐 한국어</option>
+          <option value="tr">🌐 Türkçe</option>
         </select>
 
         <!-- 设置控制面板登录密码 -->
