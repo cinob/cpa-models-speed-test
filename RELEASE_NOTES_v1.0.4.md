@@ -22,6 +22,10 @@ A major stability and usability release for the `cpa-models-speed-test` plugin, 
 - **Dynamic Document Metadata**:
   - Reactive `watch` dynamically updates `document.title` and `document.documentElement.lang` based on active locale (e.g., `CPA Model Latency Benchmark`, `CPA Бенчмарк Задержки Моделей`, `CPA 模型延迟测速`).
   - Fixed hardcoded `<title>CPA 模型测速面板</title>` in `index.html` preventing unwanted Chinese titles in browser tabs, history, and bookmarks.
+- **Channel Account Filtering**:
+  - Added dedicated Account filter chips row (`toolbar.accountFilter`) cascading from selected Provider.
+  - Allows selecting and benchmarking a specific upstream account individually without touching other accounts or draining their quotas.
+  - Top statistics and batch test execution dynamically adjust to target only the selected account.
 - **Responsive Language Selector**:
   - Clean, unified language dropdown in the navigation actions toolbar (`.nav-actions`).
   - Removed duplicate selector from the brand title row to avoid visual redundancy.

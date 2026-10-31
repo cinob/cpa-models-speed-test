@@ -48,6 +48,8 @@
     "searchPlaceholder": "搜尋模型名稱、渠道帳號、提供方類型...",
     "channelType": "渠道類型:",
     "allChannels": "全部 ({n})",
+    "accountFilter": "渠道帳號:",
+    "allAccounts": "全部帳號 ({n})",
     "dedupFilter": "去重篩選:",
     "allShow": "全部展示 ({n})",
     "dedupShow": "✨ 重複來源模型去重 ({n})",

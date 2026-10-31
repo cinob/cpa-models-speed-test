@@ -48,6 +48,8 @@
     "searchPlaceholder": "모델 이름, 채널 계정, 제공자 검색...",
     "channelType": "채널 유형:",
     "allChannels": "전체 ({n})",
+    "accountFilter": "계정:",
+    "allAccounts": "모든 계정 ({n})",
     "dedupFilter": "중복 제거:",
     "allShow": "전체 표시 ({n})",
     "dedupShow": "✨ 제공자별 중복 제거 ({n})",

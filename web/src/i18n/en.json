@@ -48,6 +48,8 @@
     "searchPlaceholder": "Search model name, channel account, provider...",
     "channelType": "Channel Type:",
     "allChannels": "All ({n})",
+    "accountFilter": "Account:",
+    "allAccounts": "All Accounts ({n})",
     "dedupFilter": "Deduplication:",
     "allShow": "Show All ({n})",
     "dedupShow": "✨ Deduplicate by Provider ({n})",

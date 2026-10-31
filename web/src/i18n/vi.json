@@ -48,6 +48,8 @@
     "searchPlaceholder": "Tìm kiếm tên mô hình, tài khoản kênh, nhà cung cấp...",
     "channelType": "Loại kênh:",
     "allChannels": "Tất cả ({n})",
+    "accountFilter": "Tài khoản:",
+    "allAccounts": "Tất cả tài khoản ({n})",
     "dedupFilter": "Khử trùng lặp:",
     "allShow": "Hiện tất cả ({n})",
     "dedupShow": "✨ Khử trùng theo nhà cung cấp ({n})",

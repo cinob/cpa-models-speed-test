@@ -48,6 +48,8 @@
     "searchPlaceholder": "Поиск модели, аккаунта канала, провайдера...",
     "channelType": "Тип канала:",
     "allChannels": "Все ({n})",
+    "accountFilter": "Аккаунт:",
+    "allAccounts": "Все аккаунты ({n})",
     "dedupFilter": "Дедупликация:",
     "allShow": "Показать все ({n})",
     "dedupShow": "✨ Скрыть дубли по провайдеру ({n})",

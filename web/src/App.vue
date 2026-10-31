@@ -23,6 +23,7 @@ const concurrency = useStorage('cpa_speedtest_concurrency', 10) // 并发数 (5/
 const serialDelay = useStorage('cpa_speedtest_serial_delay', 500) // 串行模式防限流等待间隔 (毫秒)
 const timeout = useStorage('cpa_speedtest_timeout', 30) // 单次测速超时限制 (秒，默认 30)
 const activeProvider = useStorage('cpa_speedtest_provider_filter', 'all')
+const activeAccount = useStorage('cpa_speedtest_account_filter', 'all')
 const activeStatus = useStorage('cpa_speedtest_status_filter', 'all')
 const activeEnableStatus = useStorage('cpa_speedtest_enable_filter', 'all') // 'all' | 'enabled' | 'disabled'
 const sortBy = useStorage('cpa_speedtest_sort_by', 'default')
@@ -205,10 +206,19 @@ function selectModelAccount(dedupKey, channelId) {
   }
 }
 
+// 切换 Provider 时重置账号筛选
+watch(activeProvider, () => {
+  activeAccount.value = 'all'
+})
+
 // 唯一来源模型数（用于去重筛选项提示）
 const uniqueSourceModelCount = computed(() => {
   const set = new Set()
-  for (const m of modelList.value) {
+  let list = modelList.value
+  if (activeAccount.value !== 'all') {
+    list = list.filter(m => m.channel_id === activeAccount.value)
+  }
+  for (const m of list) {
     set.add(`${(m.provider || '').toLowerCase()}::${m.model}`)
   }
   return set.size
@@ -216,8 +226,13 @@ const uniqueSourceModelCount = computed(() => {
 
 // 基础模型列表：支持重复来源(Provider)及相同模型去重合并，并保留候选账号列表
 const processedModels = computed(() => {
-  if (!dedupSource.value) {
-    return modelList.value.map(m => ({
+  let baseList = modelList.value
+  if (activeAccount.value !== 'all') {
+    baseList = baseList.filter(m => m.channel_id === activeAccount.value)
+  }
+
+  if (!dedupSource.value || activeAccount.value !== 'all') {
+    return baseList.map(m => ({
       ...m,
       dedupKey: m.key,
       accounts: [{ channel_id: m.channel_id, channel_name: m.channel_name, key: m.key, disabled: isModelDisabled(m) }]
@@ -225,7 +240,7 @@ const processedModels = computed(() => {
   }
 
   const groups = new Map()
-  for (const m of modelList.value) {
+  for (const m of baseList) {
     const dKey = `${(m.provider || '').toLowerCase()}::${m.model}`
     let grp = groups.get(dKey)
     if (!grp) {
@@ -264,6 +279,15 @@ const availableProviders = computed(() => {
     if (m.provider) set.add(m.provider.toLowerCase())
   }
   return Array.from(set).sort()
+})
+
+// 当前可选的渠道账号列表（若筛选了 Provider 则级联过滤）
+const availableAccounts = computed(() => {
+  let list = channels.value
+  if (activeProvider.value !== 'all') {
+    list = list.filter(c => (c.provider || '').toLowerCase() === activeProvider.value.toLowerCase())
+  }
+  return list
 })
 
 // 过滤模型列表（包含筛选条件）
@@ -581,6 +605,15 @@ function setupWebMCP() {
           selectModelAccount(args.dedup_key, args.channel_id)
           return { ok: true, selected: selectedAccounts.value[args.dedup_key] }
         }
+      },
+      {
+        name: 'speedtest.set_account_filter',
+        description: '设置或清除当前测速账号筛选 (channel_id 或 "all")',
+        parameters: { account_id: 'string' },
+        execute: (args) => {
+          if (args?.account_id) activeAccount.value = args.account_id
+          return { activeAccount: activeAccount.value, count: processedModels.value.length }
+        }
       }
     ],
     runAll: testAllModels,
@@ -596,6 +629,9 @@ function setupWebMCP() {
     },
     selectAccount: (dedupKey, channelId) => {
       selectModelAccount(dedupKey, channelId)
+    },
+    setAccountFilter: (channelId) => {
+      activeAccount.value = channelId || 'all'
     },
     runSingle: (channelId, model) => {
       const target = modelList.value.find(m => (m.channel_id === channelId || m.channel_name === channelId) && m.model === model)
@@ -881,8 +917,33 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- 来源模型去重筛选 Chips -->
-      <div class="filter-row">
+      <!-- 渠道账号筛选 Chips (若有多个账号可选) -->
+      <div class="filter-row" v-if="availableAccounts.length > 1">
+        <span class="filter-label">{{ t('toolbar.accountFilter') }}</span>
+        <div class="filter-chips">
+          <button
+            class="chip"
+            :class="{ active: activeAccount === 'all' }"
+            @click="activeAccount = 'all'"
+          >
+            {{ t('toolbar.allAccounts', { n: availableAccounts.length }) }}
+          </button>
+          <button
+            v-for="acc in availableAccounts"
+            :key="acc.id"
+            class="chip"
+            :class="{ active: activeAccount === acc.id }"
+            :title="acc.disabled ? `${acc.name || acc.id} (${t('card.disabled')})` : (acc.name || acc.id)"
+            @click="activeAccount = acc.id"
+          >
+            <span class="provider-dot" :style="{ backgroundColor: getProviderColor(acc.provider) }"></span>
+            {{ acc.name || acc.id }} ({{ acc.models?.length || 0 }})
+          </button>
+        </div>
+      </div>
+
+      <!-- 来源模型去重筛选 Chips (仅在未限定单个账号时有效) -->
+      <div class="filter-row" v-if="activeAccount === 'all'">
         <span class="filter-label">{{ t('toolbar.dedupFilter') }}</span>
         <div class="filter-chips">
           <button

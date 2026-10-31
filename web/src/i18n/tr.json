@@ -48,6 +48,8 @@
     "searchPlaceholder": "Model adı, kanal hesabı, sağlayıcı ara...",
     "channelType": "Kanal Türü:",
     "allChannels": "Tümü ({n})",
+    "accountFilter": "Hesap:",
+    "allAccounts": "Tüm Hesaplar ({n})",
     "dedupFilter": "Tekilleştirme:",
     "allShow": "Tümünü Göster ({n})",
     "dedupShow": "✨ Sağlayıcıya Göre Tekilleştir ({n})",
