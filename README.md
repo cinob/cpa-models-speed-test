@@ -8,11 +8,14 @@ High-performance model latency benchmarking plugin for [CLIProxyAPI (CPA)](https
 
 ## 🌟 Highlights
 
-- **Seamless Web UI Integration**: Automatically injects a **"模型测速" (Model Speed Test)** menu into CPA Management Panel.
+- **Multi-language Support (i18n)**: Seamless language switcher (English 🌐, Russian 🌐, Simplified Chinese 🌐) with auto-detection and persistence.
+- **Seamless Web UI Integration**: Automatically injects a **"Speed Test"** menu into CPA Management Panel.
+- **CGO Panic Hardening**: CGO boundary panic recovery prevents crashes of the host CLIProxyAPI core.
+- **Reasoning Models Compatibility**: Automatically handles models requiring `max_completion_tokens` (e.g., `o1`, `o3`).
 - **Auto Channel & Model Discovery**: Uses host callbacks (`host.auth.models` and `host.auth.list`) to list all upstream accounts and models (OpenAI, Claude, Gemini, Codex, DeepSeek, etc.).
 - **Batch & Single Speed Testing**:
-  - Top **【一键测速】(Batch Test)** button triggers full concurrent backend testing.
-  - Model card right **【单独测速】(Test)** button for individual re-tests.
+  - Top **Batch Test** button triggers concurrent or serial backend testing.
+  - Model card right **Test** button for individual re-tests.
 - **Lightweight Streaming Probe (TTFT)**:
   - Sends a minimal 1-token prompt with `stream: true`.
   - Disconnects immediately upon receiving the first token/chunk (`host.model.stream_close`), measuring accurate TTFT without wasting account tokens.
